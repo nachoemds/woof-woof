@@ -1,0 +1,62 @@
+/* src/index.css */
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ==========================================================================
+   Variables de Tema Modo Oscuro inspirado en Notion Dark y Modo Claro
+   ========================================================================== */
+:root {
+  --bg-app: #fafafa;
+  --bg-surface: #ffffff;
+  --bg-surface-elevated: #f5f5f5;
+  --border-app: #e5e5e5;
+  --text-main: #171717;
+  --text-muted: #737373;
+}
+
+html.dark {
+  --bg-app: #151515;
+  --bg-surface: #1e1e1e;
+  --bg-surface-elevated: #262626;
+  --border-app: #2e2e2e;
+  --text-main: #ededed;
+  --text-muted: #a1a1aa;
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* ==========================================================================
+   Reglas globales Notion Dark
+   ========================================================================== */
+html.dark body {
+  background-color: #151515;
+  color: #ededed;
+}
+
+/* Scrollbar estilo Notion */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0.3);
+  border-radius: 9999px;
+}
+
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+}
