@@ -320,6 +320,62 @@ export default function App() {
     return () => window.removeEventListener('woof_open_ticket', handleOpenTicketFromPush);
   }, [marcarTicketComoLeido]);
 
+  // ⌨️ Atajos de teclado globales (Ctrl/Cmd + N o tecla 'N' para Nuevo Ticket, 'Esc' para cerrar modales/drawers)
+  useEffect(() => {
+    if (!session || !userProfile) return;
+
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isTyping =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable);
+
+      // 1. Escape -> Cerrar el modal o drawer activo en orden de prioridad
+      if (e.key === 'Escape') {
+        if (isColorPickerOpen) {
+          e.preventDefault();
+          setIsColorPickerOpen(false);
+          return;
+        }
+        if (isTeamModalOpen) {
+          e.preventDefault();
+          setIsTeamModalOpen(false);
+          return;
+        }
+        if (isNewModalOpen) {
+          e.preventDefault();
+          setIsNewModalOpen(false);
+          return;
+        }
+        if (selectedTicket) {
+          e.preventDefault();
+          setSelectedTicket(null);
+          return;
+        }
+        return;
+      }
+
+      // 2. Nuevo Ticket -> Ctrl/Cmd + N, Alt + N, o tecla 'N' (cuando no se está escribiendo en un input)
+      const isNewTicketShortcut =
+        ((e.metaKey || e.ctrlKey || e.altKey) && e.key.toLowerCase() === 'n') ||
+        (!isTyping && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'n');
+
+      if (isNewTicketShortcut) {
+        const canCreateTicket = uiRole === 'CONTENIDOS' || uiRole === 'SUPER_ADMIN';
+        if (canCreateTicket && !isNewModalOpen && !isTeamModalOpen && !isColorPickerOpen) {
+          e.preventDefault();
+          setIsNewModalOpen(true);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [session, userProfile, uiRole, isColorPickerOpen, isTeamModalOpen, isNewModalOpen, selectedTicket]);
+
   const agregarToast = useCallback((toast: ToastNotification) => {
     setToasts((prev) => [toast, ...prev.slice(0, 4)]);
 

@@ -1,5 +1,5 @@
 // src/components/NotionTable.tsx
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { Ticket, UserRole, Profile } from "../types";
 import { ticketsService } from "../lib/supabase";
 import { KanbanBoard } from "./KanbanBoard";
@@ -78,6 +78,60 @@ export const NotionTable: React.FC<NotionTableProps> = ({
   const [purgandoIndividual, setPurgandoIndividual] = useState(false);
   const [mostrarModalVaciarPapelera, setMostrarModalVaciarPapelera] = useState(false);
   const [vaciandoPapelera, setVaciandoPapelera] = useState(false);
+
+  // Referencia al buscador para atajos de teclado (Ctrl/Cmd + F o '/')
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isTyping =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+
+      // 1. Atajo Ctrl/Cmd + F o Ctrl/Cmd + K (o '/' cuando no se está escribiendo) -> Enfocar buscador
+      if (
+        ((e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === "f" || e.key.toLowerCase() === "k")) ||
+        (!isTyping && !e.metaKey && !e.ctrlKey && !e.altKey && e.key === "/")
+      ) {
+        if (searchInputRef.current) {
+          e.preventDefault();
+          searchInputRef.current.focus();
+          searchInputRef.current.select();
+        }
+        return;
+      }
+
+      // 2. Atajo Escape -> Cerrar modales locales de confirmación o limpiar/salir del buscador
+      if (e.key === "Escape") {
+        if (ticketAEliminar) {
+          setTicketAEliminar(null);
+          return;
+        }
+        if (ticketAPurgar) {
+          setTicketAPurgar(null);
+          return;
+        }
+        if (mostrarModalVaciarPapelera) {
+          setMostrarModalVaciarPapelera(false);
+          return;
+        }
+        if (document.activeElement === searchInputRef.current) {
+          if (searchTerm) {
+            setSearchTerm("");
+          } else {
+            searchInputRef.current?.blur();
+          }
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [ticketAEliminar, ticketAPurgar, mostrarModalVaciarPapelera, searchTerm]);
 
   // Separación limpia entre tickets activos y registro de eliminados
   const ticketsActivos = useMemo(() => {
@@ -441,10 +495,14 @@ export const NotionTable: React.FC<NotionTableProps> = ({
           {currentView === "activos" && (currentRole === "CONTENIDOS" || currentRole === "SUPER_ADMIN") && (
             <button
               onClick={onOpenNewTicketModal}
+              title="Crear nuevo ticket (Atajo: Ctrl/Cmd + N o tecla N)"
               className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 bg-neutral-900 hover:bg-neutral-800 dark:bg-white dark:hover:bg-neutral-100 text-white dark:text-neutral-950 text-xs font-bold rounded-lg transition shadow-xs hover:shadow active:scale-98 cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               <span>Nuevo Ticket</span>
+              <kbd className="hidden sm:inline-block ml-1 px-1.5 py-0.5 text-[10px] font-mono font-semibold bg-white/15 dark:bg-neutral-900/15 text-white/90 dark:text-neutral-800 rounded border border-white/20 dark:border-neutral-900/20">
+                N
+              </kbd>
             </button>
           )}
         </div>
@@ -457,20 +515,29 @@ export const NotionTable: React.FC<NotionTableProps> = ({
           <div className="relative min-w-[220px] max-w-sm flex-1">
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-neutral-400 dark:text-neutral-500" />
             <input
+              ref={searchInputRef}
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Buscar por #ticket, título, diseñador o área..."
-              className="w-full text-xs pl-8 pr-8 py-2 bg-white dark:bg-[#1a1a1a] border border-neutral-200 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 dark:placeholder-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-900 dark:focus:ring-neutral-400 focus:border-neutral-900 dark:focus:border-neutral-400 shadow-2xs transition"
+              className="w-full text-xs pl-8 pr-14 py-2 bg-white dark:bg-[#1a1a1a] border border-neutral-200 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 dark:placeholder-neutral-500 focus:outline-none focus:ring-1 focus:ring-neutral-900 dark:focus:ring-neutral-400 focus:border-neutral-900 dark:focus:border-neutral-400 shadow-2xs transition"
             />
-            {searchTerm && (
+            {searchTerm ? (
               <button
                 onClick={() => setSearchTerm("")}
-                className="absolute right-2.5 top-2.5 p-0.5 rounded text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition cursor-pointer"
-                title="Limpiar búsqueda"
+                className="absolute right-2.5 top-2 p-0.5 rounded text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition cursor-pointer"
+                title="Limpiar búsqueda (Esc)"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
+            ) : (
+              <kbd
+                onClick={() => searchInputRef.current?.focus()}
+                title="Atajo de búsqueda: Ctrl/Cmd + F o /"
+                className="hidden sm:inline-flex items-center position absolute right-2 top-1.5 px-1.5 py-0.5 text-[10px] font-mono font-medium text-neutral-400 dark:text-neutral-500 bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded cursor-pointer select-none"
+              >
+                ⌘F
+              </kbd>
             )}
           </div>
 
