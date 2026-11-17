@@ -3,6 +3,12 @@ import React, { useState, useEffect, useMemo } from 'react';
 import DOMPurify from 'dompurify';
 import { Ticket, Comentario, HistorialMovimiento, UserRole, Profile } from '../types';
 import { ticketsService, supabase, formatComment } from '../lib/supabase';
+import {
+  htmlHasImages,
+  countImagesInHtml,
+  purgeImagesFromSingleTicket,
+  stripImagesFromHtmlWithNotice,
+} from '../lib/imageStorage';
 import { RichTextEditor } from './RichTextEditor';
 import { UserTagBadge } from './UserTagBadge';
 import { 
@@ -87,6 +93,11 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
   // Estados para Asignación de Diseñador
   const [disenadoresDisponibles, setDisenadoresDisponibles] = useState<Profile[]>([]);
   const [guardandoAsignacion, setGuardandoAsignacion] = useState(false);
+
+  // Estados para visor ampliado de imágenes (Lightbox) y depuración de imágenes (Super Admin)
+  const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
+  const [mostrarModalDepurarImgs, setMostrarModalDepurarImgs] = useState(false);
+  const [depurandoImgs, setDepurandoImgs] = useState(false);
 
   // Nombre del usuario activo (usando su nombre real si está autenticado)
   const nombreUsuarioActivo = userProfile?.nombre?.trim() || userProfile?.email?.split('@')[0] || (
@@ -554,11 +565,12 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
     cargarDatos(ticket.id);
   };
 
-  // Enviar comentario con el nombre del usuario autenticado
+  // Enviar comentario con el nombre del usuario autenticado (acepta texto, imagen o link)
   const handleEnviarComentario = async (e: React.FormEvent) => {
     e.preventDefault();
     const textoPlano = nuevoMensaje.replace(/<[^>]*>/g, '').trim();
-    if (!textoPlano && !nuevoLinkAdjunto.trim()) return;
+    const tieneImagen = htmlHasImages(nuevoMensaje);
+    if (!textoPlano && !tieneImagen && !nuevoLinkAdjunto.trim()) return;
 
     setErrorComentario(null);
     setEnviandoComentario(true);
@@ -1146,12 +1158,46 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
             )}
           </div>
 
-          {/* 📋 Brief del Pedido */}
+          {/* 📋 Brief del Pedido (con soporte de clic en imágenes para ampliar y botón Super Admin para depurar fotos) */}
           <div className="space-y-2">
-            <h3 className="text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
-              Brief del Pedido
-            </h3>
-            <div className="p-4 bg-neutral-50 dark:bg-[#252525] rounded-lg border border-neutral-200 dark:border-neutral-700 text-sm text-neutral-800 dark:text-neutral-200 leading-relaxed font-sans">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <h3 className="text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
+                Brief del Pedido
+              </h3>
+
+              {/* Botón Super Admin: Borrar imágenes/miniaturas de este ticket sin borrar el ticket */}
+              {currentRole === 'SUPER_ADMIN' &&
+                (countImagesInHtml(ticket.brief) > 0 ||
+                  comentarios.some((c) => countImagesInHtml(c.mensaje || c.contenido) > 0)) && (
+                  <button
+                    type="button"
+                    onClick={() => setMostrarModalDepurarImgs(true)}
+                    className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/60 text-[11px] font-semibold transition cursor-pointer shadow-2xs"
+                    title="Eliminar las imágenes de referencia y miniaturas de este ticket para liberar espacio en el servidor (conservando el ticket y todo su texto)"
+                  >
+                    <Trash2 className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                    <span>
+                      Borrar imágenes del ticket (
+                      {countImagesInHtml(ticket.brief) +
+                        comentarios.reduce(
+                          (acc, c) => acc + countImagesInHtml(c.mensaje || c.contenido),
+                          0
+                        )}
+                      )
+                    </span>
+                  </button>
+                )}
+            </div>
+            <div
+              onClick={(e) => {
+                const target = e.target as HTMLElement;
+                if (target && target.tagName === 'IMG') {
+                  const src = (target as HTMLImageElement).src;
+                  if (src) setLightboxImageUrl(src);
+                }
+              }}
+              className="p-4 bg-neutral-50 dark:bg-[#252525] rounded-lg border border-neutral-200 dark:border-neutral-700 text-sm text-neutral-800 dark:text-neutral-200 leading-relaxed font-sans"
+            >
               <div 
                 className="prose prose-sm max-w-none text-neutral-800 dark:text-neutral-200"
                 dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(ticket.brief || 'Sin detalles adicionales.') }}
@@ -1309,6 +1355,13 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
                       </div>
 
                       <div 
+                        onClick={(e) => {
+                          const target = e.target as HTMLElement;
+                          if (target && target.tagName === 'IMG') {
+                            const src = (target as HTMLImageElement).src;
+                            if (src) setLightboxImageUrl(src);
+                          }
+                        }}
                         className="prose prose-xs max-w-none text-neutral-800 dark:text-neutral-200 pl-8"
                         dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(c.mensaje || c.contenido || '') }}
                       />
@@ -1360,7 +1413,8 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
               <RichTextEditor
                 value={nuevoMensaje}
                 onChange={setNuevoMensaje}
-                placeholder={`Responder al ticket como ${nombreUsuarioActivo}...`}
+                storageFolder={`ticket_${ticket.id}`}
+                placeholder={`Responder o pegar captura/miniatura como ${nombreUsuarioActivo}...`}
               />
 
               <div className="flex items-center justify-between pt-1 gap-2">
@@ -1377,7 +1431,12 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
 
                 <button
                   type="submit"
-                  disabled={enviandoComentario || (!nuevoMensaje.trim() && !nuevoLinkAdjunto.trim())}
+                  disabled={
+                    enviandoComentario ||
+                    (!nuevoMensaje.replace(/<[^>]*>/g, '').trim() &&
+                      !htmlHasImages(nuevoMensaje) &&
+                      !nuevoLinkAdjunto.trim())
+                  }
                   className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 dark:bg-white dark:hover:bg-neutral-100 disabled:opacity-50 text-white dark:text-neutral-950 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer shadow-xs shrink-0"
                 >
                   <Send className="w-3.5 h-3.5" />
@@ -1557,6 +1616,94 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
                 )}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🧹 MODAL SUPER ADMIN: DEPURAR IMÁGENES DEL TICKET (CONSERVANDO EL REGISTRO) */}
+      {mostrarModalDepurarImgs && (
+        <div className="fixed inset-0 z-60 bg-neutral-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#202020] rounded-2xl max-w-md w-full p-6 shadow-2xl border border-amber-200 dark:border-amber-800/60 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center space-x-3 text-amber-600 dark:text-amber-400">
+              <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-950/70 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100">
+                  ¿Borrar imágenes de este ticket?
+                </h3>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Se eliminarán las referencias visuales del brief y las miniaturas en los comentarios para liberar espacio en el servidor.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-emerald-50/70 dark:bg-emerald-950/30 rounded-xl border border-emerald-200 dark:border-emerald-900/50 text-xs text-emerald-900 dark:text-emerald-200">
+              ✓ <strong>El registro del ticket NO se borra</strong>: el título, el texto del brief, el historial de conversación y los links de Google Drive se conservarán intactos.
+            </div>
+
+            <div className="flex items-center justify-end space-x-2 pt-2 border-t border-neutral-100 dark:border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setMostrarModalDepurarImgs(false)}
+                disabled={depurandoImgs}
+                className="px-4 py-2 text-xs font-semibold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setDepurandoImgs(true);
+                  try {
+                    await purgeImagesFromSingleTicket(ticket);
+                    const updatedBrief = ticket.brief
+                      ? stripImagesFromHtmlWithNotice(ticket.brief)
+                      : ticket.brief;
+                    onTicketUpdated({
+                      ...ticket,
+                      brief: updatedBrief,
+                    });
+                    await cargarDatos(ticket.id);
+                    setMostrarModalDepurarImgs(false);
+                  } catch (err) {
+                    console.error('Error depurando imágenes del ticket:', err);
+                  } finally {
+                    setDepurandoImgs(false);
+                  }
+                }}
+                disabled={depurandoImgs}
+                className="inline-flex items-center space-x-1.5 px-4 py-2 text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white rounded-lg transition cursor-pointer shadow-xs disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{depurandoImgs ? 'Liberando espacio...' : 'Sí, borrar solo las imágenes'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🔍 VISOR DE IMAGEN A PANTALLA COMPLETA (LIGHTBOX) */}
+      {lightboxImageUrl && (
+        <div
+          onClick={() => setLightboxImageUrl(null)}
+          className="fixed inset-0 z-70 bg-black/85 backdrop-blur-xs flex flex-col items-center justify-center p-4 cursor-zoom-out animate-in fade-in duration-150"
+        >
+          <div className="max-w-5xl max-h-[88vh] relative flex flex-col items-center">
+            <button
+              type="button"
+              onClick={() => setLightboxImageUrl(null)}
+              className="mb-3 px-3 py-1.5 rounded-full bg-white/15 hover:bg-white/25 text-white text-xs font-semibold flex items-center space-x-1.5 transition cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+              <span>Cerrar vista previa (Esc)</span>
+            </button>
+            <img
+              src={lightboxImageUrl}
+              alt="Vista previa ampliada"
+              onClick={(e) => e.stopPropagation()}
+              className="max-w-full max-h-[80vh] object-contain rounded-xl shadow-2xl border border-white/15 cursor-default"
+            />
           </div>
         </div>
       )}

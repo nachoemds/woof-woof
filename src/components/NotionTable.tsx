@@ -2,6 +2,7 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { Ticket, UserRole, Profile } from "../types";
 import { ticketsService } from "../lib/supabase";
+import { purgeImagesFromResolvedTickets } from "../lib/imageStorage";
 import { KanbanBoard } from "./KanbanBoard";
 import { UserTagBadge } from "./UserTagBadge";
 import {
@@ -78,6 +79,136 @@ export const NotionTable: React.FC<NotionTableProps> = ({
   const [purgandoIndividual, setPurgandoIndividual] = useState(false);
   const [mostrarModalVaciarPapelera, setMostrarModalVaciarPapelera] = useState(false);
   const [vaciandoPapelera, setVaciandoPapelera] = useState(false);
+
+  // Estados para Depurar Imágenes de Tickets Resueltos (Super Admin) sin borrar los tickets
+  const [mostrarModalDepurarResueltos, setMostrarModalDepurarResueltos] = useState(false);
+  const [depurandoResueltos, setDepurandoResueltos] = useState(false);
+  const [resultadoDepuracion, setResultadoDepuracion] = useState<string | null>(null);
+
+  // 📐 Anchos de columna redimensionables estilo Excel / Notion (con persistencia en localStorage)
+  type ColKey = "ticket" | "titulo" | "area" | "asignado" | "estado" | "fecha" | "drive";
+
+  const defaultColWidths: Record<ColKey, number> = useMemo(
+    () => ({
+      ticket: 120,
+      titulo: 360,
+      area: 185,
+      asignado: 155,
+      estado: 155,
+      fecha: 140,
+      drive: 150,
+    }),
+    []
+  );
+
+  const minColWidths: Record<ColKey, number> = useMemo(
+    () => ({
+      ticket: 85,
+      titulo: 150,
+      area: 115,
+      asignado: 105,
+      estado: 105,
+      fecha: 100,
+      drive: 105,
+    }),
+    []
+  );
+
+  const [colWidths, setColWidths] = useState<Record<ColKey, number>>(() => {
+    try {
+      const saved = localStorage.getItem("woof_notion_col_widths");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          ticket: Number(parsed.ticket) || 120,
+          titulo: Number(parsed.titulo) || 360,
+          area: Number(parsed.area) || 185,
+          asignado: Number(parsed.asignado) || 155,
+          estado: Number(parsed.estado) || 155,
+          fecha: Number(parsed.fecha) || 140,
+          drive: Number(parsed.drive) || 150,
+        };
+      }
+    } catch {}
+    return {
+      ticket: 120,
+      titulo: 360,
+      area: 185,
+      asignado: 155,
+      estado: 155,
+      fecha: 140,
+      drive: 150,
+    };
+  });
+
+  const [resizingCol, setResizingCol] = useState<ColKey | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("woof_notion_col_widths", JSON.stringify(colWidths));
+    } catch {}
+  }, [colWidths]);
+
+  const handleStartResize = useCallback(
+    (e: React.MouseEvent, col: ColKey) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const startX = e.clientX;
+      const startWidth = colWidths[col];
+      const minW = minColWidths[col] || 80;
+
+      setResizingCol(col);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        const deltaX = moveEvent.clientX - startX;
+        const newWidth = Math.max(minW, Math.min(950, startWidth + deltaX));
+        setColWidths((prev) => ({
+          ...prev,
+          [col]: newWidth,
+        }));
+      };
+
+      const onMouseUp = () => {
+        setResizingCol(null);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+      };
+
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
+    },
+    [colWidths, minColWidths]
+  );
+
+  const handleResetSingleCol = useCallback(
+    (e: React.MouseEvent, col: ColKey) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setColWidths((prev) => ({
+        ...prev,
+        [col]: defaultColWidths[col],
+      }));
+    },
+    [defaultColWidths]
+  );
+
+  const handleResetAllCols = useCallback(() => {
+    setColWidths(defaultColWidths);
+    try {
+      localStorage.removeItem("woof_notion_col_widths");
+    } catch {}
+  }, [defaultColWidths]);
+
+  const hasCustomColWidths = useMemo(() => {
+    return (Object.keys(defaultColWidths) as ColKey[]).some(
+      (k) => colWidths[k] !== defaultColWidths[k]
+    );
+  }, [colWidths, defaultColWidths]);
 
   // Referencia al buscador para atajos de teclado (Ctrl/Cmd + F o '/')
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -498,6 +629,24 @@ export const NotionTable: React.FC<NotionTableProps> = ({
             </button>
           )}
 
+          {/* Botón Super Admin: Depurar imágenes de tickets resueltos sin borrar los tickets */}
+          {currentView === "activos" &&
+            currentRole === "SUPER_ADMIN" &&
+            ticketsActivos.some((t) => (t.estado || "").toLowerCase().includes("resuelto")) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setResultadoDepuracion(null);
+                  setMostrarModalDepurarResueltos(true);
+                }}
+                className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/60 text-xs font-bold rounded-lg transition shadow-2xs cursor-pointer"
+                title="Borrar las imágenes de referencia y miniaturas de los tickets ya Resueltos para liberar espacio en el servidor (conserva los tickets y sus links de Drive)"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                <span className="hidden sm:inline">Limpiar Imágenes (Resueltos)</span>
+              </button>
+            )}
+
           {/* Botón Nuevo Ticket original: solo para Contenidos y Super Admin en activos */}
           {currentView === "activos" && (currentRole === "CONTENIDOS" || currentRole === "SUPER_ADMIN") && (
             <button
@@ -806,53 +955,194 @@ export const NotionTable: React.FC<NotionTableProps> = ({
       ) : (
         <div className="bg-white dark:bg-[#1e1e1e] rounded-xl border border-neutral-200 dark:border-neutral-800 shadow-2xs overflow-hidden transition-colors duration-200">
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table
+              className="w-full text-left border-collapse table-fixed"
+              style={{
+                minWidth:
+                  colWidths.ticket +
+                  colWidths.titulo +
+                  colWidths.area +
+                  (currentView === "activos" ? colWidths.asignado : 0) +
+                  colWidths.estado +
+                  colWidths.fecha +
+                  colWidths.drive +
+                  42,
+              }}
+            >
+              <colgroup>
+                <col style={{ width: `${colWidths.ticket}px` }} />
+                <col style={{ width: `${colWidths.titulo}px` }} />
+                <col style={{ width: `${colWidths.area}px` }} />
+                {currentView === "activos" && <col style={{ width: `${colWidths.asignado}px` }} />}
+                <col style={{ width: `${colWidths.estado}px` }} />
+                <col style={{ width: `${colWidths.fecha}px` }} />
+                <col style={{ width: `${colWidths.drive}px` }} />
+                <col style={{ width: "42px" }} />
+              </colgroup>
+
               <thead>
                 <tr className="border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-[#252525] text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider select-none">
                   {/* Cabecera: # Ticket */}
-                  <th className="py-3 px-4 w-28"># Ticket</th>
+                  <th className="relative py-3 px-4 overflow-hidden group/th">
+                    <span className="truncate block"># Ticket</span>
+                    <div
+                      onMouseDown={(e) => handleStartResize(e, "ticket")}
+                      onDoubleClick={(e) => handleResetSingleCol(e, "ticket")}
+                      onClick={(e) => e.stopPropagation()}
+                      title="Arrastrar para cambiar ancho (Doble clic para restablecer)"
+                      className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize z-10 flex items-center justify-end group/resizer"
+                    >
+                      <div
+                        className={`h-full w-[2px] transition-colors ${
+                          resizingCol === "ticket"
+                            ? "bg-blue-500"
+                            : "bg-neutral-200/70 dark:bg-neutral-700/70 group-hover/resizer:bg-blue-500"
+                        }`}
+                      />
+                    </div>
+                  </th>
 
                   {/* Cabecera: Título */}
                   <th
                     onClick={() => setSortBy(sortBy === "titulo" ? "fecha_desc" : "titulo")}
-                    className="py-3 px-4 cursor-pointer hover:text-neutral-900 dark:hover:text-white group"
+                    className="relative py-3 px-4 cursor-pointer hover:text-neutral-900 dark:hover:text-white group overflow-hidden"
                     title="Ordenar por título"
                   >
-                    <div className="flex items-center space-x-1">
-                      <span>Título del pedido</span>
-                      {sortBy === "titulo" && <ArrowDown className="w-3 h-3 text-neutral-900 dark:text-white" />}
+                    <div className="flex items-center space-x-1 truncate pr-2">
+                      <span className="truncate">Título del pedido</span>
+                      {sortBy === "titulo" && <ArrowDown className="w-3 h-3 text-neutral-900 dark:text-white shrink-0" />}
+                    </div>
+                    <div
+                      onMouseDown={(e) => handleStartResize(e, "titulo")}
+                      onDoubleClick={(e) => handleResetSingleCol(e, "titulo")}
+                      onClick={(e) => e.stopPropagation()}
+                      title="Arrastrar para cambiar ancho (Doble clic para restablecer)"
+                      className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize z-10 flex items-center justify-end group/resizer"
+                    >
+                      <div
+                        className={`h-full w-[2px] transition-colors ${
+                          resizingCol === "titulo"
+                            ? "bg-blue-500"
+                            : "bg-neutral-200/70 dark:bg-neutral-700/70 group-hover/resizer:bg-blue-500"
+                        }`}
+                      />
                     </div>
                   </th>
 
                   {/* Cabecera: Área Solicitante */}
-                  <th className="py-3 px-4 w-40">Área / Solicitante</th>
+                  <th className="relative py-3 px-4 overflow-hidden">
+                    <span className="truncate block pr-2">Área / Solicitante</span>
+                    <div
+                      onMouseDown={(e) => handleStartResize(e, "area")}
+                      onDoubleClick={(e) => handleResetSingleCol(e, "area")}
+                      onClick={(e) => e.stopPropagation()}
+                      title="Arrastrar para cambiar ancho (Doble clic para restablecer)"
+                      className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize z-10 flex items-center justify-end group/resizer"
+                    >
+                      <div
+                        className={`h-full w-[2px] transition-colors ${
+                          resizingCol === "area"
+                            ? "bg-blue-500"
+                            : "bg-neutral-200/70 dark:bg-neutral-700/70 group-hover/resizer:bg-blue-500"
+                        }`}
+                      />
+                    </div>
+                  </th>
 
                   {/* Cabecera: Diseñador Asignado (Solo en activos) */}
-                  {currentView === "activos" && <th className="py-3 px-4 w-36">Asignado a</th>}
+                  {currentView === "activos" && (
+                    <th className="relative py-3 px-4 overflow-hidden">
+                      <span className="truncate block pr-2">Asignado a</span>
+                      <div
+                        onMouseDown={(e) => handleStartResize(e, "asignado")}
+                        onDoubleClick={(e) => handleResetSingleCol(e, "asignado")}
+                        onClick={(e) => e.stopPropagation()}
+                        title="Arrastrar para cambiar ancho (Doble clic para restablecer)"
+                        className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize z-10 flex items-center justify-end group/resizer"
+                      >
+                        <div
+                          className={`h-full w-[2px] transition-colors ${
+                            resizingCol === "asignado"
+                              ? "bg-blue-500"
+                              : "bg-neutral-200/70 dark:bg-neutral-700/70 group-hover/resizer:bg-blue-500"
+                          }`}
+                        />
+                      </div>
+                    </th>
+                  )}
 
                   {/* Cabecera: Estado o Motivo de Eliminación */}
-                  <th className="py-3 px-4 w-40">{currentView === "activos" ? "Estado" : "Motivo"}</th>
+                  <th className="relative py-3 px-4 overflow-hidden">
+                    <span className="truncate block pr-2">{currentView === "activos" ? "Estado" : "Motivo"}</span>
+                    <div
+                      onMouseDown={(e) => handleStartResize(e, "estado")}
+                      onDoubleClick={(e) => handleResetSingleCol(e, "estado")}
+                      onClick={(e) => e.stopPropagation()}
+                      title="Arrastrar para cambiar ancho (Doble clic para restablecer)"
+                      className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize z-10 flex items-center justify-end group/resizer"
+                    >
+                      <div
+                        className={`h-full w-[2px] transition-colors ${
+                          resizingCol === "estado"
+                            ? "bg-blue-500"
+                            : "bg-neutral-200/70 dark:bg-neutral-700/70 group-hover/resizer:bg-blue-500"
+                        }`}
+                      />
+                    </div>
+                  </th>
 
                   {/* Cabecera: Actividad / Fecha */}
                   <th
                     onClick={() => setSortBy(sortBy === "novedades" ? "fecha_asc" : "novedades")}
-                    className="py-3 px-4 w-32 cursor-pointer hover:text-neutral-900 dark:hover:text-white group"
+                    className="relative py-3 px-4 cursor-pointer hover:text-neutral-900 dark:hover:text-white group overflow-hidden"
                     title="Alternar orden por novedades y actividad reciente"
                   >
-                    <div className="flex items-center space-x-1">
-                      <span>{currentView === "activos" ? "Últ. Actividad" : "Eliminado"}</span>
+                    <div className="flex items-center space-x-1 truncate pr-2">
+                      <span className="truncate">{currentView === "activos" ? "Últ. Actividad" : "Eliminado"}</span>
                       {sortBy === "novedades" || sortBy === "fecha_desc" ? (
-                        <ArrowDown className="w-3 h-3 text-neutral-900 dark:text-white" />
+                        <ArrowDown className="w-3 h-3 text-neutral-900 dark:text-white shrink-0" />
                       ) : sortBy === "fecha_asc" ? (
-                        <ArrowUp className="w-3 h-3 text-neutral-900 dark:text-white" />
+                        <ArrowUp className="w-3 h-3 text-neutral-900 dark:text-white shrink-0" />
                       ) : null}
+                    </div>
+                    <div
+                      onMouseDown={(e) => handleStartResize(e, "fecha")}
+                      onDoubleClick={(e) => handleResetSingleCol(e, "fecha")}
+                      onClick={(e) => e.stopPropagation()}
+                      title="Arrastrar para cambiar ancho (Doble clic para restablecer)"
+                      className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize z-10 flex items-center justify-end group/resizer"
+                    >
+                      <div
+                        className={`h-full w-[2px] transition-colors ${
+                          resizingCol === "fecha"
+                            ? "bg-blue-500"
+                            : "bg-neutral-200/70 dark:bg-neutral-700/70 group-hover/resizer:bg-blue-500"
+                        }`}
+                      />
                     </div>
                   </th>
 
                   {/* Columna Acciones / Drive */}
-                  <th className="py-3 px-4 w-36 text-center">{currentView === "activos" ? "Drive" : "Acciones"}</th>
+                  <th className="relative py-3 px-4 text-center overflow-hidden">
+                    <span className="truncate block">{currentView === "activos" ? "Drive" : "Acciones"}</span>
+                    <div
+                      onMouseDown={(e) => handleStartResize(e, "drive")}
+                      onDoubleClick={(e) => handleResetSingleCol(e, "drive")}
+                      onClick={(e) => e.stopPropagation()}
+                      title="Arrastrar para cambiar ancho (Doble clic para restablecer)"
+                      className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize z-10 flex items-center justify-end group/resizer"
+                    >
+                      <div
+                        className={`h-full w-[2px] transition-colors ${
+                          resizingCol === "drive"
+                            ? "bg-blue-500"
+                            : "bg-neutral-200/70 dark:bg-neutral-700/70 group-hover/resizer:bg-blue-500"
+                        }`}
+                      />
+                    </div>
+                  </th>
 
-                  <th className="py-3 px-2 w-8"></th>
+                  <th className="py-3 px-2 w-[42px]"></th>
                 </tr>
               </thead>
 
@@ -910,8 +1200,8 @@ export const NotionTable: React.FC<NotionTableProps> = ({
                         }`}
                       >
                         {/* # Ticket */}
-                        <td className="py-3.5 px-4 font-mono font-medium text-neutral-600 dark:text-neutral-400">
-                          <div className="flex items-center space-x-2">
+                        <td className="py-3.5 px-4 font-mono font-medium text-neutral-600 dark:text-neutral-400 overflow-hidden">
+                          <div className="flex items-center space-x-2 truncate">
                             {tieneNovedad ? (
                               <span className="relative flex h-2.5 w-2.5 shrink-0" title="¡Novedad en este ticket!">
                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
@@ -922,7 +1212,7 @@ export const NotionTable: React.FC<NotionTableProps> = ({
                             )}
 
                             <span
-                              className={`group-hover:text-neutral-900 dark:group-hover:text-white transition-colors ${
+                              className={`truncate group-hover:text-neutral-900 dark:group-hover:text-white transition-colors ${
                                 ticket.eliminado ? "line-through text-neutral-400 dark:text-neutral-600" : ""
                               }`}
                             >
@@ -932,7 +1222,7 @@ export const NotionTable: React.FC<NotionTableProps> = ({
 
                             {tieneNovedad && novedadBadge && (
                               <span
-                                className={`inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold leading-none ${novedadBadge.classes}`}
+                                className={`inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold leading-none shrink-0 ${novedadBadge.classes}`}
                               >
                                 {novedadBadge.label}
                               </span>
@@ -941,17 +1231,17 @@ export const NotionTable: React.FC<NotionTableProps> = ({
                         </td>
 
                         {/* Título y Brief resumido */}
-                        <td className="py-3.5 px-4 font-medium text-neutral-900 dark:text-neutral-100">
-                          <div className="flex flex-col">
+                        <td className="py-3.5 px-4 font-medium text-neutral-900 dark:text-neutral-100 overflow-hidden">
+                          <div className="flex flex-col min-w-0">
                             <span
-                              className={`truncate max-w-md group-hover:underline ${
+                              className={`truncate w-full group-hover:underline ${
                                 ticket.eliminado ? "text-neutral-500 dark:text-neutral-400" : ""
                               }`}
                             >
                               {ticket.titulo}
                             </span>
                             {ticket.brief && (
-                              <span className="text-[11px] text-neutral-400 dark:text-neutral-500 font-normal truncate max-w-md mt-0.5">
+                              <span className="text-[11px] text-neutral-400 dark:text-neutral-500 font-normal truncate w-full mt-0.5">
                                 {ticket.brief.replace(/<[^>]*>/g, "")}
                               </span>
                             )}
@@ -959,17 +1249,17 @@ export const NotionTable: React.FC<NotionTableProps> = ({
                         </td>
 
                         {/* Área Solicitante y Creador */}
-                        <td className="py-3.5 px-4 text-neutral-600 dark:text-neutral-300">
-                          <div className="flex flex-col space-y-1">
-                            <span className="inline-block px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 text-[11px] font-medium border border-neutral-200 dark:border-neutral-700 w-fit">
+                        <td className="py-3.5 px-4 text-neutral-600 dark:text-neutral-300 overflow-hidden">
+                          <div className="flex flex-col space-y-1 min-w-0">
+                            <span className="inline-block px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 text-[11px] font-medium border border-neutral-200 dark:border-neutral-700 w-fit max-w-full truncate">
                               {ticket.area_solicitante}
                             </span>
                             <span
-                              className="text-[11px] text-neutral-500 dark:text-neutral-400 flex items-center space-x-1 font-medium"
+                              className="text-[11px] text-neutral-500 dark:text-neutral-400 flex items-center space-x-1 font-medium min-w-0"
                               title={`Pedido creado por: ${ticket.creado_por || "Equipo de Contenidos"}`}
                             >
-                              <span className="text-neutral-400">👤</span>
-                              <span className="truncate max-w-[120px] font-semibold text-neutral-700 dark:text-neutral-300">
+                              <span className="text-neutral-400 shrink-0">👤</span>
+                              <span className="truncate font-semibold text-neutral-700 dark:text-neutral-300">
                                 {ticket.creado_por || "Equipo de Contenidos"}
                               </span>
                             </span>
@@ -978,27 +1268,29 @@ export const NotionTable: React.FC<NotionTableProps> = ({
 
                         {/* Diseñador Asignado (Solo en vista de activos) */}
                         {currentView === "activos" && (
-                          <td className="py-3.5 px-4 text-neutral-700 dark:text-neutral-300">
-                            {asignado ? (
-                              <UserTagBadge name={asignado} size="sm" />
-                            ) : (
-                              <span className="text-neutral-400 dark:text-neutral-500 italic text-[11px]">
-                                Sin asignar
-                              </span>
-                            )}
+                          <td className="py-3.5 px-4 text-neutral-700 dark:text-neutral-300 overflow-hidden">
+                            <div className="truncate">
+                              {asignado ? (
+                                <UserTagBadge name={asignado} size="sm" />
+                              ) : (
+                                <span className="text-neutral-400 dark:text-neutral-500 italic text-[11px]">
+                                  Sin asignar
+                                </span>
+                              )}
+                            </div>
                           </td>
                         )}
 
                         {/* Estado en Activos vs Motivo en Eliminados */}
-                        <td className="py-3.5 px-4">
+                        <td className="py-3.5 px-4 overflow-hidden">
                           {currentView === "activos" ? (
                             <span
-                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium border capitalize ${getBadgeClass(
+                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium border capitalize max-w-full truncate ${getBadgeClass(
                                 ticket.estado,
                               )}`}
                             >
                               <span
-                                className={`w-1.5 h-1.5 rounded-full mr-1.5 ${
+                                className={`w-1.5 h-1.5 rounded-full mr-1.5 shrink-0 ${
                                   est.includes("correc") || est.includes("ajust")
                                     ? "bg-orange-500"
                                     : est.includes("resuelto")
@@ -1010,17 +1302,17 @@ export const NotionTable: React.FC<NotionTableProps> = ({
                                           : "bg-amber-500"
                                 }`}
                               />
-                              {est.includes("correc") ? "Correcciones" : ticket.estado}
+                              <span className="truncate">{est.includes("correc") ? "Correcciones" : ticket.estado}</span>
                             </span>
                           ) : (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300 border border-rose-200 dark:border-rose-800">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300 border border-rose-200 dark:border-rose-800 max-w-full truncate">
                               {ticket.motivo_eliminacion || "Error en la carga de datos"}
                             </span>
                           )}
                         </td>
 
                         {/* Fecha / Última Actividad */}
-                        <td className="py-3.5 px-4 text-neutral-500 dark:text-neutral-400 whitespace-nowrap">
+                        <td className="py-3.5 px-4 text-neutral-500 dark:text-neutral-400 whitespace-nowrap overflow-hidden truncate">
                           {formatearFecha(
                             currentView === "eliminados"
                               ? ticket.eliminado_en || ticket.actualizado_en || ticket.creado_en
@@ -1029,7 +1321,7 @@ export const NotionTable: React.FC<NotionTableProps> = ({
                         </td>
 
                         {/* Drive (Activos) o Botones Restaurar/Purgar (Eliminados) */}
-                        <td className="py-3.5 px-4 text-center" onClick={(e) => e.stopPropagation()}>
+                        <td className="py-3.5 px-4 text-center overflow-hidden" onClick={(e) => e.stopPropagation()}>
                           {currentView === "activos" ? (
                             <div className="flex items-center justify-center space-x-1.5">
                               {ticket.link_entrega || ticket.links_entrega ? (
@@ -1102,7 +1394,7 @@ export const NotionTable: React.FC<NotionTableProps> = ({
 
           {/* Resumen inferior estilo Notion con todos los 5 estados */}
           <div className="px-4 py-3 bg-neutral-50/80 dark:bg-[#202020] border-t border-neutral-200 dark:border-neutral-800 text-xs text-neutral-500 dark:text-neutral-400 flex flex-col sm:flex-row items-center justify-between gap-2">
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-2 flex-wrap">
               <span>
                 Mostrando <strong className="text-neutral-800 dark:text-neutral-200">{ticketsOrdenados.length}</strong>{" "}
                 de{" "}
@@ -1116,6 +1408,17 @@ export const NotionTable: React.FC<NotionTableProps> = ({
               )}
               {soloMisPedidos && (
                 <span className="text-blue-600 dark:text-blue-400 font-semibold">(Mis pedidos: activo)</span>
+              )}
+              {hasCustomColWidths && (
+                <button
+                  type="button"
+                  onClick={handleResetAllCols}
+                  title="Volver al ancho original de todas las columnas"
+                  className="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-neutral-200/70 hover:bg-neutral-300/80 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 transition cursor-pointer"
+                >
+                  <RotateCcw className="w-2.5 h-2.5" />
+                  <span>Restablecer columnas</span>
+                </button>
               )}
             </div>
             {currentView === "activos" && (
@@ -1369,6 +1672,78 @@ export const NotionTable: React.FC<NotionTableProps> = ({
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>{vaciandoPapelera ? "Purgando..." : "Sí, vaciar registro"}</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🧹 Modal Super Admin: Depurar Imágenes de todos los Tickets Resueltos (Conservando los Tickets) */}
+      {mostrarModalDepurarResueltos && (
+        <div className="fixed inset-0 z-60 bg-neutral-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#202020] rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4 border border-amber-200 dark:border-amber-800 animate-in fade-in zoom-in-95">
+            <div className="flex items-center space-x-3 text-amber-600 dark:text-amber-400">
+              <div className="w-10 h-10 rounded-full bg-amber-50 dark:bg-amber-950/60 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-neutral-900 dark:text-neutral-100">
+                  Limpiar imágenes de tickets Resueltos
+                </h3>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Libera almacenamiento eliminando las capturas de referencia y miniaturas de envío final en los pedidos ya aprobados.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-emerald-50/70 dark:bg-emerald-950/30 rounded-xl border border-emerald-200 dark:border-emerald-900/50 text-xs text-emerald-900 dark:text-emerald-200">
+              ✓ <strong>No se pierde ningún ticket</strong>: Todos los tickets resueltos, sus títulos, textos de brief, historial de comentarios y links de Google Drive se mantienen 100% intactos.
+            </div>
+
+            {resultadoDepuracion && (
+              <div className="p-3 bg-blue-50 dark:bg-blue-950/40 rounded-xl border border-blue-200 dark:border-blue-800 text-xs text-blue-900 dark:text-blue-200 font-semibold">
+                {resultadoDepuracion}
+              </div>
+            )}
+
+            <div className="flex items-center justify-end space-x-2 pt-3 border-t border-neutral-100 dark:border-neutral-800">
+              <button
+                type="button"
+                onClick={() => setMostrarModalDepurarResueltos(false)}
+                disabled={depurandoResueltos}
+                className="px-4 py-2 text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition cursor-pointer"
+              >
+                {resultadoDepuracion ? "Cerrar" : "Cancelar"}
+              </button>
+              {!resultadoDepuracion && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setDepurandoResueltos(true);
+                    try {
+                      const res = await purgeImagesFromResolvedTickets(ticketsActivos);
+                      if (res.imagesRemoved > 0) {
+                        setResultadoDepuracion(
+                          `✨ Se eliminaron ${res.imagesRemoved} imágenes/miniaturas en ${res.ticketsCleaned} tickets resueltos. Los registros se conservaron intactos.`
+                        );
+                      } else {
+                        setResultadoDepuracion(
+                          "✓ Los tickets resueltos ya están limpios (no tenían imágenes pendientes de depurar)."
+                        );
+                      }
+                    } catch (e) {
+                      console.error(e);
+                      setResultadoDepuracion("Ocurrió un error al intentar limpiar las imágenes.");
+                    } finally {
+                      setDepurandoResueltos(false);
+                    }
+                  }}
+                  disabled={depurandoResueltos}
+                  className="px-4 py-2 text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white rounded-lg shadow-sm transition cursor-pointer flex items-center space-x-1.5 disabled:opacity-50"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>{depurandoResueltos ? "Liberando espacio..." : "Sí, borrar imágenes de Resueltos"}</span>
+                </button>
+              )}
             </div>
           </div>
         </div>

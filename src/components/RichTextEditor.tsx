@@ -11,8 +11,11 @@ import {
   Link2, 
   RemoveFormatting, 
   Type,
-  ChevronDown
+  ChevronDown,
+  ImagePlus,
+  Loader2
 } from 'lucide-react';
+import { uploadTicketImage } from '../lib/imageStorage';
 
 interface RichTextEditorProps {
   value: string;
@@ -20,6 +23,7 @@ interface RichTextEditorProps {
   placeholder?: string;
   minHeight?: string;
   disabled?: boolean;
+  storageFolder?: string;
 }
 
 const TEXT_COLORS = [
@@ -54,13 +58,17 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   onChange,
   placeholder = 'Escribe tu mensaje...',
   minHeight = '100px',
-  disabled = false
+  disabled = false,
+  storageFolder = 'general'
 }) => {
   const editorRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [showToolbar, setShowToolbar] = useState(true);
   const [showTextColorPicker, setShowTextColorPicker] = useState(false);
   const [showBgColorPicker, setShowBgColorPicker] = useState(false);
   const [showFontSizePicker, setShowFontSizePicker] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
 
   // Sincronizar contenido inicial o externo sin perder la posición del cursor
   useEffect(() => {
@@ -113,8 +121,87 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     }
   };
 
+  // Procesa, comprime (~100KB) y sube una o más imágenes insertándolas en el editor
+  const processAndInsertImages = async (files: File[]) => {
+    const imageFiles = files.filter((f) => f.type.startsWith('image/'));
+    if (imageFiles.length === 0 || disabled) return;
+
+    setUploadingImage(true);
+    try {
+      for (const file of imageFiles) {
+        const uploaded = await uploadTicketImage(file, storageFolder);
+        if (editorRef.current) {
+          editorRef.current.focus();
+          const imgHtml = `<br><img src="${uploaded.url}" alt="Referencia adjunta" style="max-height:240px; max-width:100%; width:auto; border-radius:8px; margin:6px 0; border:1px solid #d4d4d4; cursor:zoom-in; display:block;" /><br>`;
+          document.execCommand('insertHTML', false, imgHtml);
+          emitChange();
+        }
+      }
+    } catch (err) {
+      console.error('Error subiendo imagen adjunta:', err);
+    } finally {
+      setUploadingImage(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    if (files.length > 0) {
+      await processAndInsertImages(files);
+    }
+  };
+
+  // Soporte para pegar capturas de pantalla directo con Ctrl+V / Cmd+V
+  const handlePaste = async (e: React.ClipboardEvent<HTMLDivElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const pastedImages: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) pastedImages.push(file);
+      }
+    }
+
+    if (pastedImages.length > 0) {
+      e.preventDefault();
+      await processAndInsertImages(pastedImages);
+    }
+  };
+
+  // Soporte para arrastrar y soltar imágenes dentro del editor
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    setIsDraggingOver(false);
+    const files = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : [];
+    const imageFiles = files.filter((f) => f.type.startsWith('image/'));
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      await processAndInsertImages(imageFiles);
+    }
+  };
+
   return (
-    <div className="border border-neutral-300 dark:border-neutral-700 rounded-lg bg-white dark:bg-[#1a1a1a] overflow-hidden focus-within:ring-1 focus-within:ring-neutral-900 dark:focus-within:ring-neutral-400 focus-within:border-neutral-900 dark:focus-within:border-neutral-400 transition shadow-2xs">
+    <div
+      className={`border rounded-lg bg-white dark:bg-[#1a1a1a] overflow-hidden focus-within:ring-1 focus-within:ring-neutral-900 dark:focus-within:ring-neutral-400 focus-within:border-neutral-900 dark:focus-within:border-neutral-400 transition shadow-2xs ${
+        isDraggingOver
+          ? 'border-blue-500 ring-2 ring-blue-500/20 bg-blue-50/10'
+          : 'border-neutral-300 dark:border-neutral-700'
+      }`}
+    >
+      {/* Input oculto para seleccionar imágenes JPG/PNG/WebP */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/gif"
+        multiple
+        onChange={handleFileInputChange}
+        className="hidden"
+      />
       
       {/* Barra de Herramientas Estilo Gmail */}
       {showToolbar && (
@@ -294,6 +381,29 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             <Link2 className="w-3.5 h-3.5" />
           </button>
 
+          <div className="h-4 w-px bg-neutral-300 dark:bg-neutral-700 mx-1" />
+
+          {/* Botón Adjuntar Imagen / Miniatura (JPG, PNG, Captura) */}
+          <button
+            type="button"
+            disabled={disabled || uploadingImage}
+            onClick={() => fileInputRef.current?.click()}
+            className="inline-flex items-center space-x-1 px-2 py-1 rounded bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/50 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 border border-blue-200/80 dark:border-blue-800/60 transition cursor-pointer text-[11px] font-semibold"
+            title="Adjuntar imagen de referencia o miniatura (También puedes pegar con Ctrl+V / Cmd+V)"
+          >
+            {uploadingImage ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Comprimiendo...</span>
+              </>
+            ) : (
+              <>
+                <ImagePlus className="w-3.5 h-3.5" />
+                <span>Adjuntar JPG/PNG</span>
+              </>
+            )}
+          </button>
+
           {/* Limpiar formato */}
           <button
             type="button"
@@ -307,13 +417,22 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
         </div>
       )}
 
-      {/* Área Editable estilo Gmail / Notion */}
-      <div className="relative">
+      {/* Área Editable estilo Gmail / Notion con soporte de Pegar y Arrastrar Imágenes */}
+      <div
+        className="relative"
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (!isDraggingOver) setIsDraggingOver(true);
+        }}
+        onDragLeave={() => setIsDraggingOver(false)}
+        onDrop={handleDrop}
+      >
         <div
           ref={editorRef}
           contentEditable={!disabled}
           onInput={emitChange}
           onBlur={emitChange}
+          onPaste={handlePaste}
           style={{ minHeight }}
           className="p-3 text-xs text-neutral-800 dark:text-neutral-100 focus:outline-none overflow-y-auto leading-relaxed rich-editor-content"
         />
@@ -344,7 +463,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
         </button>
 
         <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-          Usa <strong>Ctrl+B</strong> para negrita, <strong>Ctrl+I</strong> para cursiva
+          💡 Puedes pegar capturas con <strong>Ctrl+V / Cmd+V</strong> o arrastrar JPG/PNG
         </span>
       </div>
 
