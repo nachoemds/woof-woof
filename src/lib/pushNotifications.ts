@@ -166,6 +166,7 @@ export async function sendNativePushNotification({
         icon: '/IsoYema.svg',
         badge: '/IsoYema.svg',
         tag: notificationTag,
+        silent: true, // Silencia el sonido por defecto de Windows/Mac para que solo suene ladrido.mp3
         data: { ticketId: ticketId ?? null, url: '/' },
       });
       return true;
@@ -181,6 +182,7 @@ export async function sendNativePushNotification({
       icon: '/IsoYema.svg',
       badge: '/IsoYema.svg',
       tag: notificationTag,
+      silent: true, // Silencia el sonido por defecto de Windows/Mac para que solo suene ladrido.mp3
     });
 
     notif.onclick = () => {

@@ -43,6 +43,7 @@ self.addEventListener('push', (event) => {
       badge: payload.badge || '/IsoYema.svg',
       tag: payload.tag,
       renotify: true,
+      silent: true,
       requireInteraction: false,
       data: payload.data,
     })
@@ -62,6 +63,7 @@ self.addEventListener('message', (event) => {
       badge: '/IsoYema.svg',
       tag: tag || `woof-ticket-${ticketId || Date.now()}`,
       renotify: true,
+      silent: true,
       requireInteraction: false,
       data: {
         ticketId: ticketId || null,

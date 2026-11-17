@@ -1,14 +1,21 @@
 // src/lib/audioAlert.ts
 /**
  * Sistema de audio oficial "Woof Woof"
- * Prioridades de reproducción:
- * 1. Audio personalizado en memoria/localStorage (woof_custom_sound)
- * 2. Archivo /woofwoof.mp3 (servido desde la carpeta public/)
- * 3. Archivo /woofwoof.wav (servido desde la carpeta public/)
- * 4. Sintetizador acústico Web Audio API de respaldo para garantizar que SIEMPRE suene.
+ * Reproduce SIEMPRE el archivo de ladrido cargado en el proyecto (/ladrido.mp3 / /woofwoof.mp3).
+ *
+ * Para evitar que Chrome/Safari bloqueen `new Audio().play()` cuando llega una notificación
+ * por WebSocket (Supabase Realtime) y disparen otro sonido por error:
+ * 1. Precargamos y decodificamos el archivo real (/ladrido.mp3) en memoria (AudioBuffer) al iniciar.
+ * 2. Desbloqueamos el canal de audio en el primer clic/tecla del usuario.
+ * 3. Al llegar una notificación, reproducimos el archivo real cargado sin usar sintetizadores artificiales.
  */
 
+const SOUND_FILES = ['/ladrido.mp3', '/woofwoof.mp3', '/woof.mp3', '/woofwoof.wav'];
+
 let audioCtx: AudioContext | null = null;
+let decodedBarkBuffer: AudioBuffer | null = null;
+let isLoadingBuffer = false;
+let preloadedAudioElement: HTMLAudioElement | null = null;
 
 function getAudioContext(): AudioContext | null {
   if (typeof window === 'undefined') return null;
@@ -30,128 +37,94 @@ function getAudioContext(): AudioContext | null {
   }
 }
 
-// Desbloqueo del contexto de audio ante cualquier clic o tecla del usuario
-if (typeof window !== 'undefined') {
-  const desbloquearAudio = () => {
-    if (audioCtx && audioCtx.state === 'suspended') {
-      audioCtx.resume().catch(() => {});
+/**
+ * Precarga el archivo real /ladrido.mp3 en memoria para que pueda sonar instantáneamente
+ * incluso cuando el evento proviene de Supabase Realtime en segundo plano.
+ */
+async function preloadRealBarkFile(): Promise<void> {
+  if (typeof window === 'undefined' || decodedBarkBuffer || isLoadingBuffer) return;
+  isLoadingBuffer = true;
+
+  try {
+    // 1. Preparar elemento HTMLAudioElement reutilizable apuntando a /ladrido.mp3
+    if (!preloadedAudioElement) {
+      preloadedAudioElement = new Audio('/ladrido.mp3');
+      preloadedAudioElement.preload = 'auto';
+      preloadedAudioElement.volume = 1.0;
     }
+
+    // 2. Decodificar el archivo de audio real en AudioBuffer
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    for (const url of SOUND_FILES) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        const arrayBuffer = await res.arrayBuffer();
+        if (arrayBuffer.byteLength > 0) {
+          decodedBarkBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+          break;
+        }
+      } catch {
+        // Intentar con el siguiente nombre de archivo en public/
+      }
+    }
+  } catch {
+    // Ignorar errores de red iniciales
+  } finally {
+    isLoadingBuffer = false;
+  }
+}
+
+// Desbloqueo y precarga automática del archivo /ladrido.mp3 ante la primera interacción del usuario
+if (typeof window !== 'undefined') {
+  const desbloquearYPrecargarAudio = () => {
+    const ctx = getAudioContext();
+    if (ctx && ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+    preloadRealBarkFile();
   };
-  window.addEventListener('click', desbloquearAudio, { passive: true });
-  window.addEventListener('keydown', desbloquearAudio, { passive: true });
-  window.addEventListener('touchstart', desbloquearAudio, { passive: true });
+
+  window.addEventListener('click', desbloquearYPrecargarAudio, { passive: true });
+  window.addEventListener('keydown', desbloquearYPrecargarAudio, { passive: true });
+  window.addEventListener('touchstart', desbloquearYPrecargarAudio, { passive: true });
+
+  // Iniciar precarga apenas carga el módulo
+  setTimeout(() => {
+    preloadRealBarkFile();
+  }, 300);
 }
 
 /**
- * Sintetizador acústico de respaldo (ladrido canino de perro mediano)
+ * Reproduce el buffer decodificado del archivo real /ladrido.mp3
  */
-function sintetizarLadrido(
-  ctx: AudioContext,
-  startTime: number,
-  pitchMultiplier = 1,
-  volumeMultiplier = 1
-) {
-  const duracion = 0.22;
-  const osc = ctx.createOscillator();
-  const oscTri = ctx.createOscillator();
-  osc.type = 'sawtooth';
-  oscTri.type = 'triangle';
-
-  const freqInicial = 380 * pitchMultiplier;
-  const freqFinal = 220 * pitchMultiplier;
-
-  osc.frequency.setValueAtTime(freqInicial, startTime);
-  osc.frequency.exponentialRampToValueAtTime(freqFinal, startTime + duracion);
-
-  oscTri.frequency.setValueAtTime(freqInicial * 0.5, startTime);
-  oscTri.frequency.exponentialRampToValueAtTime(freqFinal * 0.5, startTime + duracion);
-
-  const formantFilter = ctx.createBiquadFilter();
-  formantFilter.type = 'bandpass';
-  formantFilter.frequency.setValueAtTime(650, startTime);
-  formantFilter.Q.setValueAtTime(2.8, startTime);
-
-  const gain = ctx.createGain();
-  gain.gain.setValueAtTime(0.001, startTime);
-  gain.gain.linearRampToValueAtTime(0.6 * volumeMultiplier, startTime + 0.035);
-  gain.gain.exponentialRampToValueAtTime(0.001, startTime + duracion);
-
-  osc.connect(formantFilter);
-  oscTri.connect(formantFilter);
-  formantFilter.connect(gain);
-  gain.connect(ctx.destination);
-
-  osc.start(startTime);
-  oscTri.start(startTime);
-  osc.stop(startTime + duracion);
-  oscTri.stop(startTime + duracion);
-
-  // Ruido de garganta
-  const bufferSize = Math.floor(ctx.sampleRate * duracion);
-  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) {
-    data[i] = (Math.random() * 2 - 1) * 0.35;
-  }
-
-  const noise = ctx.createBufferSource();
-  noise.buffer = buffer;
-
-  const noiseFilter = ctx.createBiquadFilter();
-  noiseFilter.type = 'lowpass';
-  noiseFilter.frequency.setValueAtTime(900, startTime);
-
-  const noiseGain = ctx.createGain();
-  noiseGain.gain.setValueAtTime(0.001, startTime);
-  noiseGain.gain.linearRampToValueAtTime(0.35 * volumeMultiplier, startTime + 0.025);
-  noiseGain.gain.exponentialRampToValueAtTime(0.001, startTime + duracion);
-
-  noise.connect(noiseFilter);
-  noiseFilter.connect(noiseGain);
-  noiseGain.connect(ctx.destination);
-
-  noise.start(startTime);
-  noise.stop(startTime + duracion);
-}
-
-export function reproducirSintetizadorRespaldo() {
+function playDecodedBarkBuffer(): boolean {
   const ctx = getAudioContext();
-  if (!ctx) return;
+  if (!ctx || !decodedBarkBuffer) return false;
+
   try {
-    const ahora = ctx.currentTime;
-    sintetizarLadrido(ctx, ahora + 0.01, 1.0, 0.85);
-    sintetizarLadrido(ctx, ahora + 0.22, 1.15, 0.75);
-  } catch (err) {
-    console.warn('Error sintetizando ladrido de respaldo:', err);
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+    const source = ctx.createBufferSource();
+    source.buffer = decodedBarkBuffer;
+
+    const gainNode = ctx.createGain();
+    gainNode.gain.value = 1.0;
+
+    source.connect(gainNode);
+    gainNode.connect(ctx.destination);
+    source.start(0);
+    return true;
+  } catch {
+    return false;
   }
 }
 
 /**
- * Guarda un archivo de sonido personalizado (Base64) en localStorage
- */
-export function guardarSonidoPersonalizado(dataUrl: string) {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem('woof_custom_sound', dataUrl);
-  } catch (err) {
-    console.warn('No se pudo guardar el sonido en localStorage:', err);
-  }
-}
-
-/**
- * Obtiene el sonido personalizado si existe
- */
-export function obtenerSonidoPersonalizado(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem('woof_custom_sound');
-}
-
-/**
- * Reproduce el sonido de alerta Woof Woof:
- * 1. Audio personalizado en localStorage
- * 2. Archivo /woofwoof.mp3
- * 3. Archivo /woofwoof.wav
- * 4. Sintetizador nativo de respaldo
+ * Reproduce el sonido de alerta original cargado (/ladrido.mp3)
  */
 export function reproducirLadridoAlerta(forzar = false) {
   if (typeof window === 'undefined') return;
@@ -161,46 +134,32 @@ export function reproducirLadridoAlerta(forzar = false) {
     return;
   }
 
-  // 1. Audio guardado directamente en el navegador por el usuario
-  const customSound = localStorage.getItem('woof_custom_sound');
-  if (customSound) {
-    try {
-      const audio = new Audio(customSound);
-      audio.volume = 1.0;
-      const promise = audio.play();
-      if (promise) {
-        promise.catch(() => reproducirSintetizadorRespaldo());
-      }
-      return;
-    } catch {
-      // Si falla, continuar
-    }
+  // 1. Si el archivo /ladrido.mp3 ya está decodificado en memoria, reproducirlo directamente
+  // (Esto garantiza que SIEMPRE suene el archivo real de ladrido sin ser bloqueado por el navegador)
+  if (decodedBarkBuffer && playDecodedBarkBuffer()) {
+    return;
   }
 
-  // 2. Intentar reproducir el archivo de audio woofwoof.mp3
+  // 2. Reproducir directamente el archivo /ladrido.mp3 mediante HTMLAudioElement
   try {
-    const audio = new Audio('/woofwoof.mp3');
+    const audio = preloadedAudioElement || new Audio('/ladrido.mp3');
+    audio.currentTime = 0;
     audio.volume = 1.0;
     const playPromise = audio.play();
     if (playPromise) {
-      playPromise.catch((err) => {
-        console.warn('Fallo reproducir /woofwoof.mp3:', err);
-        // 3. Fallback a /woofwoof.wav
+      playPromise.catch(() => {
+        // Fallback inmediato a /woofwoof.mp3 si /ladrido.mp3 no estuviera disponible
         try {
-          const audioWav = new Audio('/woofwoof.wav');
-          audioWav.volume = 1.0;
-          const wavPromise = audioWav.play();
-          if (wavPromise) {
-            wavPromise.catch(() => reproducirSintetizadorRespaldo());
-          }
-        } catch {
-          reproducirSintetizadorRespaldo();
-        }
+          const fallbackAudio = new Audio('/woofwoof.mp3');
+          fallbackAudio.volume = 1.0;
+          fallbackAudio.play().catch(() => {});
+        } catch {}
       });
     }
+    // Asegurar que quede decodificado para las próximas notificaciones en tiempo real
+    preloadRealBarkFile();
   } catch (err) {
-    console.warn('Error iniciando Audio:', err);
-    reproducirSintetizadorRespaldo();
+    console.warn('Error reproduciendo /ladrido.mp3:', err);
   }
 }
 
