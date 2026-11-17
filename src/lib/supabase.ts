@@ -675,6 +675,57 @@ export const ticketsService = {
     return true;
   },
 
+  // 3b. Editar el Brief y/o Link de Referencia de un ticket existente (Contenidos / Super Admin)
+  async updateTicketBrief(
+    ticketId: string | number,
+    nuevoBrief: string,
+    nuevoLinkReferencia?: string,
+    usuario: string = "Usuario",
+  ): Promise<boolean> {
+    const briefLimpio = (nuevoBrief || "").trim();
+    const linkLimpio = (nuevoLinkReferencia || "").trim();
+    const fecha = new Date().toISOString();
+
+    const payloadVariants: any[] = [
+      {
+        brief: briefLimpio,
+        link_referencia: linkLimpio || null,
+        links_referencia: linkLimpio || null,
+        actualizado_en: fecha,
+      },
+      {
+        brief: briefLimpio,
+        link_referencia: linkLimpio || null,
+        updated_at: fecha,
+      },
+      {
+        brief: briefLimpio,
+        link_referencia: linkLimpio || null,
+      },
+      {
+        brief: briefLimpio,
+      },
+    ];
+
+    for (const variant of payloadVariants) {
+      try {
+        const { error } = await supabase
+          .from("tickets")
+          .update(variant)
+          .eq("id", ticketId);
+        if (!error) break;
+      } catch {}
+    }
+
+    await safeInsertMovement(
+      ticketId,
+      `Brief e insumos actualizados por ${usuario}`,
+      usuario,
+    );
+
+    return true;
+  },
+
   // 4. Mover a registro de eliminados (Soft Delete)
   async deleteTicket(
     ticketId: string | number,
@@ -1009,7 +1060,7 @@ export const ticketsService = {
     return true;
   },
 
-  // 8b. Asignar un diseñador responsable al ticket y mover a 'en_proceso' si estaba en 'pendiente'
+  // 8b. Asignar o desasignar un diseñador responsable al ticket y mover a 'en_proceso' si estaba en 'pendiente'
   async assignTicket(
     ticketId: string | number,
     asignadoA: string,
@@ -1017,7 +1068,48 @@ export const ticketsService = {
     cambiarAEnProceso: boolean = true,
   ): Promise<boolean> {
     const nombreLimpio = (asignadoA || "").trim();
-    if (!nombreLimpio) return false;
+
+    if (!nombreLimpio) {
+      // Desasignar diseñador
+      try {
+        const current = getLocalAssignedDesigners();
+        delete current[String(ticketId)];
+        localStorage.setItem(
+          "ticketing_assigned_designers",
+          JSON.stringify(current),
+        );
+      } catch {}
+
+      const unassignVariants: any[] = [
+        {
+          asignado_a: null,
+          asignado_nombre: null,
+          actualizado_en: new Date().toISOString(),
+        },
+        {
+          asignado_a: null,
+          updated_at: new Date().toISOString(),
+        },
+        { asignado_a: null },
+      ];
+
+      for (const variant of unassignVariants) {
+        try {
+          const { error } = await supabase
+            .from("tickets")
+            .update(variant)
+            .eq("id", ticketId);
+          if (!error) break;
+        } catch {}
+      }
+
+      await safeInsertMovement(
+        ticketId,
+        `Ticket dejado sin asignar`,
+        usuarioNombre || "Diseño",
+      );
+      return true;
+    }
 
     saveLocalAssignedDesigner(ticketId, nombreLimpio);
     if (cambiarAEnProceso) {

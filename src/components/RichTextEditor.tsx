@@ -24,6 +24,7 @@ interface RichTextEditorProps {
   minHeight?: string;
   disabled?: boolean;
   storageFolder?: string;
+  onSubmitShortcut?: () => void;
 }
 
 const TEXT_COLORS = [
@@ -59,14 +60,18 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   placeholder = 'Escribe tu mensaje...',
   minHeight = '100px',
   disabled = false,
-  storageFolder = 'general'
+  storageFolder = 'general',
+  onSubmitShortcut
 }) => {
   const editorRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const savedRangeRef = useRef<Range | null>(null);
   const [showToolbar, setShowToolbar] = useState(true);
   const [showTextColorPicker, setShowTextColorPicker] = useState(false);
   const [showBgColorPicker, setShowBgColorPicker] = useState(false);
   const [showFontSizePicker, setShowFontSizePicker] = useState(false);
+  const [showLinkPopover, setShowLinkPopover] = useState(false);
+  const [linkUrlInput, setLinkUrlInput] = useState('');
   const [uploadingImage, setUploadingImage] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
 
@@ -114,11 +119,46 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     setShowFontSizePicker(false);
   };
 
-  const handleInsertLink = () => {
-    const url = window.prompt('Pega la URL del enlace (Drive, Figma, web):', 'https://');
-    if (url && url !== 'https://' && url.trim()) {
-      executeCommand('createLink', url.trim());
+  const handleOpenLinkPopover = () => {
+    if (disabled) return;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      savedRangeRef.current = sel.getRangeAt(0).cloneRange();
     }
+    setShowTextColorPicker(false);
+    setShowBgColorPicker(false);
+    setShowFontSizePicker(false);
+    setShowLinkPopover((prev) => !prev);
+  };
+
+  const handleConfirmInsertLink = () => {
+    const raw = linkUrlInput.trim();
+    if (!raw) {
+      setShowLinkPopover(false);
+      return;
+    }
+    const finalUrl = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    editorRef.current?.focus();
+    if (savedRangeRef.current) {
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(savedRangeRef.current);
+      }
+    }
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) {
+      document.execCommand('createLink', false, finalUrl);
+    } else {
+      document.execCommand(
+        'insertHTML',
+        false,
+        `<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline;">${finalUrl}</a>&nbsp;`
+      );
+    }
+    emitChange();
+    setLinkUrlInput('');
+    setShowLinkPopover(false);
   };
 
   // Procesa, comprime (~100KB) y sube una o más imágenes insertándolas en el editor
@@ -370,16 +410,51 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             <ListOrdered className="w-3.5 h-3.5" />
           </button>
 
-          {/* Enlace */}
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={handleInsertLink}
-            className="p-1.5 rounded hover:bg-neutral-200/70 dark:hover:bg-neutral-700 transition cursor-pointer text-neutral-700 dark:text-neutral-300"
-            title="Insertar enlace"
-          >
-            <Link2 className="w-3.5 h-3.5" />
-          </button>
+          {/* Enlace con popover inline (sin window.prompt) */}
+          <div className="relative">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={handleOpenLinkPopover}
+              className={`p-1.5 rounded transition cursor-pointer ${
+                showLinkPopover
+                  ? 'bg-neutral-200 dark:bg-neutral-700 text-blue-600 dark:text-blue-400'
+                  : 'hover:bg-neutral-200/70 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300'
+              }`}
+              title="Insertar enlace"
+            >
+              <Link2 className="w-3.5 h-3.5" />
+            </button>
+
+            {showLinkPopover && (
+              <div className="absolute left-0 top-full mt-1 bg-white dark:bg-[#252525] border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-xl p-2 z-30 flex items-center space-x-1.5 min-w-[250px]">
+                <input
+                  type="text"
+                  value={linkUrlInput}
+                  onChange={(e) => setLinkUrlInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleConfirmInsertLink();
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setShowLinkPopover(false);
+                    }
+                  }}
+                  placeholder="https://drive.google.com/..."
+                  autoFocus
+                  className="flex-1 px-2 py-1 text-xs rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-[#1a1a1a] text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleConfirmInsertLink}
+                  className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-semibold rounded transition cursor-pointer shrink-0"
+                >
+                  Insertar
+                </button>
+              </div>
+            )}
+          </div>
 
           <div className="h-4 w-px bg-neutral-300 dark:bg-neutral-700 mx-1" />
 
@@ -433,6 +508,13 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
           onInput={emitChange}
           onBlur={emitChange}
           onPaste={handlePaste}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && onSubmitShortcut) {
+              e.preventDefault();
+              emitChange();
+              onSubmitShortcut();
+            }
+          }}
           style={{ minHeight }}
           className="p-3 text-xs text-neutral-800 dark:text-neutral-100 focus:outline-none overflow-y-auto leading-relaxed rich-editor-content"
         />

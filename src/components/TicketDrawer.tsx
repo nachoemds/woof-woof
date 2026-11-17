@@ -70,10 +70,15 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
   const [enviandoComentario, setEnviandoComentario] = useState(false);
   const [errorComentario, setErrorComentario] = useState<string | null>(null);
 
-  // Estados para Edición de Título
+  // Estados para Edición de Título y Brief/Referencias
   const [editandoTitulo, setEditandoTitulo] = useState(false);
   const [nuevoTitulo, setNuevoTitulo] = useState('');
   const [guardandoTitulo, setGuardandoTitulo] = useState(false);
+
+  const [editandoBrief, setEditandoBrief] = useState(false);
+  const [nuevoBrief, setNuevoBrief] = useState('');
+  const [nuevoLinkRef, setNuevoLinkRef] = useState('');
+  const [guardandoBrief, setGuardandoBrief] = useState(false);
 
   // Estados para Modal de Eliminación (Soft Delete)
   const [mostrarModalEliminar, setMostrarModalEliminar] = useState(false);
@@ -167,6 +172,9 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
     setCopiadoLink(false);
     setNuevoTitulo(ticket.titulo || '');
     setEditandoTitulo(false);
+    setNuevoBrief(ticket.brief || '');
+    setNuevoLinkRef(ticket.link_referencia || ticket.links_referencia || '');
+    setEditandoBrief(false);
     setMostrarModalEliminar(false);
     setMostrarModalAjustes(false);
     setDetalleAjustes('');
@@ -244,6 +252,52 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
     };
   }, [ticket?.id, isOpen]);
 
+  // Prioridad de tecla Escape: si hay un lightbox, modal interno o edición abierta dentro del Drawer,
+  // cerramos primero esa capa sin cerrar todo el TicketDrawer.
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleCaptureEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (lightboxImageUrl) {
+        e.stopImmediatePropagation();
+        setLightboxImageUrl(null);
+      } else if (mostrarModalDepurarImgs) {
+        e.stopImmediatePropagation();
+        setMostrarModalDepurarImgs(false);
+      } else if (mostrarModalAjustes) {
+        e.stopImmediatePropagation();
+        setMostrarModalAjustes(false);
+      } else if (mostrarModalEliminar) {
+        e.stopImmediatePropagation();
+        setMostrarModalEliminar(false);
+      } else if (mostrarModalPurgar) {
+        e.stopImmediatePropagation();
+        setMostrarModalPurgar(false);
+      } else if (editandoBrief) {
+        e.stopImmediatePropagation();
+        setEditandoBrief(false);
+      } else if (editandoTitulo) {
+        e.stopImmediatePropagation();
+        setEditandoTitulo(false);
+      } else if (editandoEntrega) {
+        e.stopImmediatePropagation();
+        setEditandoEntrega(false);
+      }
+    };
+    window.addEventListener('keydown', handleCaptureEsc, true);
+    return () => window.removeEventListener('keydown', handleCaptureEsc, true);
+  }, [
+    isOpen,
+    lightboxImageUrl,
+    mostrarModalDepurarImgs,
+    mostrarModalAjustes,
+    mostrarModalEliminar,
+    mostrarModalPurgar,
+    editandoBrief,
+    editandoTitulo,
+    editandoEntrega
+  ]);
+
   const cargarDatos = async (ticketId: string | number) => {
     setLoadingComentarios(true);
     try {
@@ -295,6 +349,14 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
     setTimeout(() => setCopiadoLink(false), 2200);
   };
 
+  // Normalizador inteligente de URLs (agrega https:// si falta)
+  const normalizeUrlInput = (raw: string): string => {
+    const trimmed = (raw || '').trim();
+    if (!trimmed) return '';
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    return `https://${trimmed}`;
+  };
+
   // Guardar cambio de título
   const handleGuardarTitulo = async () => {
     if (!nuevoTitulo.trim()) return;
@@ -311,6 +373,47 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
       console.error('Error guardando título:', err);
     } finally {
       setGuardandoTitulo(false);
+    }
+  };
+
+  // Guardar cambio de Brief y/o Link de Referencia (Contenidos / Super Admin)
+  const handleGuardarBrief = async () => {
+    const briefPlano = nuevoBrief.replace(/<[^>]*>/g, '').trim();
+    const tieneImg = htmlHasImages(nuevoBrief);
+    if (!briefPlano && !tieneImg) return;
+
+    setGuardandoBrief(true);
+    const linkNormalizado = normalizeUrlInput(nuevoLinkRef);
+    try {
+      const ok = await ticketsService.updateTicketBrief(
+        ticket.id,
+        nuevoBrief.trim(),
+        linkNormalizado,
+        nombreUsuarioActivo
+      );
+      if (ok) {
+        await ticketsService.addComment(
+          ticket.id,
+          `✏️ **Brief / Insumos actualizados por ${nombreUsuarioActivo}**: Se actualizaron las especificaciones o el link de referencia del pedido.`,
+          nombreUsuarioActivo,
+          linkNormalizado || undefined,
+          currentRole === 'SUPER_ADMIN' ? 'SUPER_ADMIN' : 'CONTENIDOS'
+        );
+        const actualizado: Ticket = {
+          ...ticket,
+          brief: nuevoBrief.trim(),
+          link_referencia: linkNormalizado || undefined,
+          links_referencia: linkNormalizado || undefined,
+          actualizado_en: new Date().toISOString()
+        };
+        onTicketUpdated(actualizado);
+        setEditandoBrief(false);
+        cargarDatos(ticket.id);
+      }
+    } catch (err) {
+      console.error('Error guardando brief:', err);
+    } finally {
+      setGuardandoBrief(false);
     }
   };
 
@@ -538,7 +641,7 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
   // Guardar link de entrega en Drive y cambiar a 'en_revision' automáticamente
   const handleGuardarLinkEntrega = async () => {
     if (!nuevoLinkEntrega.trim()) return;
-    const linkLimpio = nuevoLinkEntrega.trim();
+    const linkLimpio = normalizeUrlInput(nuevoLinkEntrega);
 
     await ticketsService.updateDeliveryLink(ticket.id, linkLimpio, true);
     await ticketsService.updateTicketStatus(ticket.id, 'en_revision', nombreUsuarioActivo);
@@ -566,8 +669,7 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
   };
 
   // Enviar comentario con el nombre del usuario autenticado (acepta texto, imagen o link)
-  const handleEnviarComentario = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const enviarComentarioActual = async () => {
     const textoPlano = nuevoMensaje.replace(/<[^>]*>/g, '').trim();
     const tieneImagen = htmlHasImages(nuevoMensaje);
     if (!textoPlano && !tieneImagen && !nuevoLinkAdjunto.trim()) return;
@@ -576,7 +678,7 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
     setEnviandoComentario(true);
 
     const textoMensaje = nuevoMensaje;
-    const linkAdjunto = nuevoLinkAdjunto.trim();
+    const linkAdjunto = normalizeUrlInput(nuevoLinkAdjunto);
 
     const idTemporal = `temp-${Date.now()}`;
     const comentarioOptimista: Comentario = {
@@ -628,6 +730,11 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
     } finally {
       setEnviandoComentario(false);
     }
+  };
+
+  const handleEnviarComentario = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await enviarComentarioActual();
   };
 
   const formatearFecha = (fechaStr?: string) => {
@@ -1049,7 +1156,7 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
                     </label>
                     <div className="flex items-center space-x-2">
                       <input
-                        type="url"
+                        type="text"
                         value={nuevoLinkEntrega}
                         onChange={(e) => setNuevoLinkEntrega(e.target.value)}
                         placeholder="https://drive.google.com/drive/folders/..."
@@ -1129,7 +1236,7 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
 
                 <div className="flex items-center space-x-2">
                   <input
-                    type="url"
+                    type="text"
                     value={nuevoLinkEntrega}
                     onChange={(e) => setNuevoLinkEntrega(e.target.value)}
                     placeholder="https://drive.google.com/drive/folders/..."
@@ -1158,64 +1265,140 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
             )}
           </div>
 
-          {/* 📋 Brief del Pedido (con soporte de clic en imágenes para ampliar y botón Super Admin para depurar fotos) */}
+          {/* 📋 Brief del Pedido (con edición para Contenidos/SuperAdmin, zoom en imágenes y depuración de fotos) */}
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <h3 className="text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
                 Brief del Pedido
               </h3>
 
-              {/* Botón Super Admin: Borrar imágenes/miniaturas de este ticket sin borrar el ticket */}
-              {currentRole === 'SUPER_ADMIN' &&
-                (countImagesInHtml(ticket.brief) > 0 ||
-                  comentarios.some((c) => countImagesInHtml(c.mensaje || c.contenido) > 0)) && (
+              <div className="flex items-center space-x-2 flex-wrap">
+                {puedeEditarTitulo && !estaEliminado && (
                   <button
                     type="button"
-                    onClick={() => setMostrarModalDepurarImgs(true)}
-                    className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/60 text-[11px] font-semibold transition cursor-pointer shadow-2xs"
-                    title="Eliminar las imágenes de referencia y miniaturas de este ticket para liberar espacio en el servidor (conservando el ticket y todo su texto)"
+                    onClick={() => {
+                      if (!editandoBrief) {
+                        setNuevoBrief(ticket.brief || '');
+                        setNuevoLinkRef(ticket.link_referencia || ticket.links_referencia || '');
+                      }
+                      setEditandoBrief(!editandoBrief);
+                    }}
+                    className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700 text-[11px] font-semibold transition cursor-pointer"
+                    title="Modificar el brief, agregar especificaciones o actualizar el link de referencia"
                   >
-                    <Trash2 className="w-3 h-3 text-amber-600 dark:text-amber-400" />
-                    <span>
-                      Borrar imágenes del ticket (
-                      {countImagesInHtml(ticket.brief) +
-                        comentarios.reduce(
-                          (acc, c) => acc + countImagesInHtml(c.mensaje || c.contenido),
-                          0
-                        )}
-                      )
-                    </span>
+                    <Pencil className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+                    <span>{editandoBrief ? 'Cancelar edición' : 'Editar brief / insumos'}</span>
                   </button>
                 )}
+
+                {/* Botón Super Admin: Borrar imágenes/miniaturas de este ticket sin borrar el ticket */}
+                {currentRole === 'SUPER_ADMIN' &&
+                  (countImagesInHtml(ticket.brief) > 0 ||
+                    comentarios.some((c) => countImagesInHtml(c.mensaje || c.contenido) > 0)) && (
+                    <button
+                      type="button"
+                      onClick={() => setMostrarModalDepurarImgs(true)}
+                      className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/60 text-[11px] font-semibold transition cursor-pointer shadow-2xs"
+                      title="Eliminar las imágenes de referencia y miniaturas de este ticket para liberar espacio en el servidor (conservando el ticket y todo su texto)"
+                    >
+                      <Trash2 className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                      <span>
+                        Borrar imágenes del ticket (
+                        {countImagesInHtml(ticket.brief) +
+                          comentarios.reduce(
+                            (acc, c) => acc + countImagesInHtml(c.mensaje || c.contenido),
+                            0
+                          )}
+                        )
+                      </span>
+                    </button>
+                  )}
+              </div>
             </div>
-            <div
-              onClick={(e) => {
-                const target = e.target as HTMLElement;
-                if (target && target.tagName === 'IMG') {
-                  const src = (target as HTMLImageElement).src;
-                  if (src) setLightboxImageUrl(src);
-                }
-              }}
-              className="p-4 bg-neutral-50 dark:bg-[#252525] rounded-lg border border-neutral-200 dark:border-neutral-700 text-sm text-neutral-800 dark:text-neutral-200 leading-relaxed font-sans"
-            >
-              <div 
-                className="prose prose-sm max-w-none text-neutral-800 dark:text-neutral-200"
-                dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(ticket.brief || 'Sin detalles adicionales.') }}
-              />
-            </div>
+
+            {editandoBrief ? (
+              <div className="p-4 bg-blue-50/40 dark:bg-blue-950/20 rounded-xl border border-blue-200 dark:border-blue-800/60 space-y-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-neutral-700 dark:text-neutral-300 uppercase tracking-wider mb-1">
+                    Especificaciones del Brief:
+                  </label>
+                  <RichTextEditor
+                    value={nuevoBrief}
+                    onChange={setNuevoBrief}
+                    storageFolder={`ticket_${ticket.id}`}
+                    minHeight="130px"
+                    placeholder="Actualiza el brief o pega nuevas referencias visuales con Ctrl+V..."
+                    onSubmitShortcut={handleGuardarBrief}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-neutral-700 dark:text-neutral-300 uppercase tracking-wider mb-1">
+                    Link de Referencia / Carpeta de Insumos (Drive / Figma):
+                  </label>
+                  <input
+                    type="text"
+                    value={nuevoLinkRef}
+                    onChange={(e) => setNuevoLinkRef(e.target.value)}
+                    placeholder="https://drive.google.com/drive/folders/..."
+                    className="w-full px-3 py-2 text-xs bg-white dark:bg-[#161616] border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end space-x-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setEditandoBrief(false)}
+                    disabled={guardandoBrief}
+                    className="px-3 py-1.5 text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:bg-neutral-200/60 dark:hover:bg-neutral-800 rounded-lg transition cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleGuardarBrief}
+                    disabled={guardandoBrief}
+                    className="inline-flex items-center space-x-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition cursor-pointer shadow-xs"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{guardandoBrief ? 'Guardando...' : 'Guardar Cambios'}</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div
+                onClick={(e) => {
+                  const target = e.target as HTMLElement;
+                  if (target && target.tagName === 'IMG') {
+                    const src = (target as HTMLImageElement).src;
+                    if (src) setLightboxImageUrl(src);
+                  }
+                }}
+                className="p-4 bg-neutral-50 dark:bg-[#252525] rounded-lg border border-neutral-200 dark:border-neutral-700 text-sm text-neutral-800 dark:text-neutral-200 leading-relaxed font-sans"
+              >
+                <div 
+                  className="prose prose-sm max-w-none text-neutral-800 dark:text-neutral-200"
+                  dangerouslySetInnerHTML={{
+                    __html: DOMPurify.sanitize(ticket.brief || 'Sin detalles adicionales.', {
+                      ADD_ATTR: ['target', 'rel', 'style']
+                    })
+                  }}
+                />
+              </div>
+            )}
           </div>
 
           {/* 🔗 Enlace de Referencia original de Contenidos */}
-          {(ticket.link_referencia || ticket.links_referencia) && (
+          {!editandoBrief && (ticket.link_referencia || ticket.links_referencia) && (
             <div className="space-y-2">
-              <h3 className="text-xs font-bold text-neutral-400 uppercase tracking-wider">
+              <h3 className="text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
                 Material de Referencia / Insumos
               </h3>
               <a
                 href={ticket.link_referencia || ticket.links_referencia}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center space-x-2 text-xs text-blue-600 hover:text-blue-800 bg-blue-50/60 hover:bg-blue-100/60 border border-blue-200 px-3 py-2 rounded-lg transition"
+                className="inline-flex items-center space-x-2 text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 bg-blue-50/60 dark:bg-blue-950/40 hover:bg-blue-100/60 dark:hover:bg-blue-900/50 border border-blue-200 dark:border-blue-800/60 px-3 py-2 rounded-lg transition"
               >
                 <ExternalLink className="w-4 h-4 shrink-0" />
                 <span className="truncate max-w-md font-medium">
@@ -1227,26 +1410,26 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
 
           {/* 💬 Feed Único: Actividad y Conversación en Tiempo Real (Estilo Gmail + Notion) */}
           <div className="pt-2">
-            <div className="flex items-center justify-between border-b border-neutral-200 pb-2.5">
+            <div className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 pb-2.5">
               <div className="flex items-center space-x-2">
-                <MessageSquare className="w-4 h-4 text-neutral-500" />
-                <h3 className="text-xs font-bold text-neutral-800 uppercase tracking-wider">
+                <MessageSquare className="w-4 h-4 text-neutral-500 dark:text-neutral-400" />
+                <h3 className="text-xs font-bold text-neutral-800 dark:text-neutral-200 uppercase tracking-wider">
                   Actividad y Conversación ({feedUnificado.length})
                 </h3>
               </div>
-              <span className="text-[11px] text-neutral-400">
+              <span className="text-[11px] text-neutral-400 dark:text-neutral-500">
                 Historial unificado
               </span>
             </div>
 
             <div className="mt-4 space-y-3">
               {loadingComentarios ? (
-                <div className="py-8 text-center text-xs text-neutral-400 flex flex-col items-center justify-center space-y-2">
-                  <div className="w-5 h-5 border-2 border-neutral-800 border-t-transparent rounded-full animate-spin" />
+                <div className="py-8 text-center text-xs text-neutral-400 dark:text-neutral-500 flex flex-col items-center justify-center space-y-2">
+                  <div className="w-5 h-5 border-2 border-neutral-800 dark:border-neutral-300 border-t-transparent rounded-full animate-spin" />
                   <span>Cargando actividad...</span>
                 </div>
               ) : feedUnificado.length === 0 ? (
-                <div className="py-8 text-center text-xs text-neutral-400 bg-neutral-50 rounded-lg border border-neutral-200">
+                <div className="py-8 text-center text-xs text-neutral-400 dark:text-neutral-500 bg-neutral-50 dark:bg-[#252525] rounded-lg border border-neutral-200 dark:border-neutral-800">
                   No hay mensajes ni eventos registrados en este ticket aún. ¡Inicia la conversación abajo!
                 </div>
               ) : (
@@ -1258,41 +1441,41 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
 
                     // Seleccionar icono y color del evento
                     let IconComponent = Clock;
-                    let iconColor = 'text-neutral-500';
-                    let bgColor = 'bg-neutral-100 border-neutral-200 text-neutral-700';
+                    let iconColor = 'text-neutral-500 dark:text-neutral-400';
+                    let bgColor = 'bg-neutral-100 dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300';
 
                     if (accion.toLowerCase().includes('asignad')) {
                       IconComponent = UserCheck;
-                      iconColor = 'text-blue-600';
-                      bgColor = 'bg-blue-50/80 border-blue-200 text-blue-900';
-                    } else if (accion.toLowerCase().includes('título')) {
+                      iconColor = 'text-blue-600 dark:text-blue-400';
+                      bgColor = 'bg-blue-50/80 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800/60 text-blue-900 dark:text-blue-200';
+                    } else if (accion.toLowerCase().includes('título') || accion.toLowerCase().includes('brief')) {
                       IconComponent = Pencil;
-                      iconColor = 'text-amber-600';
-                      bgColor = 'bg-amber-50/80 border-amber-200 text-amber-900';
+                      iconColor = 'text-amber-600 dark:text-amber-400';
+                      bgColor = 'bg-amber-50/80 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800/60 text-amber-900 dark:text-amber-200';
                     } else if (accion.toLowerCase().includes('eliminad') || accion.toLowerCase().includes('papelera')) {
                       IconComponent = Trash2;
-                      iconColor = 'text-rose-600';
-                      bgColor = 'bg-rose-50/80 border-rose-200 text-rose-900';
+                      iconColor = 'text-rose-600 dark:text-rose-400';
+                      bgColor = 'bg-rose-50/80 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800/60 text-rose-900 dark:text-rose-200';
                     } else if (accion.toLowerCase().includes('restaurad')) {
                       IconComponent = RotateCcw;
-                      iconColor = 'text-emerald-600';
-                      bgColor = 'bg-emerald-50/80 border-emerald-200 text-emerald-900';
+                      iconColor = 'text-emerald-600 dark:text-emerald-400';
+                      bgColor = 'bg-emerald-50/80 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60 text-emerald-900 dark:text-emerald-200';
                     } else if (accion.toLowerCase().includes('estado')) {
                       IconComponent = RefreshCw;
-                      iconColor = 'text-purple-600';
-                      bgColor = 'bg-purple-50/80 border-purple-200 text-purple-900';
+                      iconColor = 'text-purple-600 dark:text-purple-400';
+                      bgColor = 'bg-purple-50/80 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800/60 text-purple-900 dark:text-purple-200';
                     }
 
                     return (
                       <div key={item.id} className="flex items-center space-x-2 my-2 py-0.5 text-xs">
-                        <div className="h-px bg-neutral-200 flex-1" />
+                        <div className="h-px bg-neutral-200 dark:bg-neutral-800 flex-1" />
                         <div className={`flex items-center space-x-1.5 px-3 py-1 rounded-full border text-[11px] shadow-2xs shrink-0 ${bgColor}`}>
                           <IconComponent className={`w-3.5 h-3.5 ${iconColor}`} />
-                          <span className="font-bold text-neutral-900">{autorMov}:</span>
+                          <span className="font-bold text-neutral-900 dark:text-neutral-100">{autorMov}:</span>
                           <span>{accion}</span>
-                          <span className="text-neutral-400 font-normal">• {formatearFecha(m.creado_en || m.created_at)}</span>
+                          <span className="text-neutral-400 dark:text-neutral-500 font-normal">• {formatearFecha(m.creado_en || m.created_at)}</span>
                         </div>
-                        <div className="h-px bg-neutral-200 flex-1" />
+                        <div className="h-px bg-neutral-200 dark:bg-neutral-800 flex-1" />
                       </div>
                     );
                   }
@@ -1363,7 +1546,11 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
                           }
                         }}
                         className="prose prose-xs max-w-none text-neutral-800 dark:text-neutral-200 pl-8"
-                        dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(c.mensaje || c.contenido || '') }}
+                        dangerouslySetInnerHTML={{
+                          __html: DOMPurify.sanitize(c.mensaje || c.contenido || '', {
+                            ADD_ATTR: ['target', 'rel', 'style']
+                          })
+                        }}
                       />
 
                       {c.link_adjunto && (
@@ -1406,7 +1593,7 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
                   Escribiendo como: <strong className="text-neutral-800 dark:text-neutral-200">{nombreUsuarioActivo}</strong>
                 </span>
                 <span className="text-[11px] text-neutral-400 dark:text-neutral-500">
-                  Enter para enviar • Shift+Enter para salto
+                  Ctrl/Cmd + Enter para enviar
                 </span>
               </div>
 
@@ -1415,13 +1602,14 @@ export const TicketDrawer: React.FC<TicketDrawerProps> = ({
                 onChange={setNuevoMensaje}
                 storageFolder={`ticket_${ticket.id}`}
                 placeholder={`Responder o pegar captura/miniatura como ${nombreUsuarioActivo}...`}
+                onSubmitShortcut={enviarComentarioActual}
               />
 
               <div className="flex items-center justify-between pt-1 gap-2">
                 <div className="flex-1 flex items-center space-x-2">
                   <Paperclip className="w-4 h-4 text-neutral-400 dark:text-neutral-500 shrink-0" />
                   <input
-                    type="url"
+                    type="text"
                     value={nuevoLinkAdjunto}
                     onChange={(e) => setNuevoLinkAdjunto(e.target.value)}
                     placeholder="Adjuntar enlace adicional (opcional)..."
