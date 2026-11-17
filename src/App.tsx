@@ -320,21 +320,38 @@ export default function App() {
     return () => window.removeEventListener('woof_open_ticket', handleOpenTicketFromPush);
   }, [marcarTicketComoLeido]);
 
-  // ⌨️ Atajos de teclado globales (Ctrl/Cmd + N o tecla 'N' para Nuevo Ticket, 'Esc' para cerrar modales/drawers)
+  const agregarToast = useCallback((toast: ToastNotification) => {
+    setToasts((prev) => [toast, ...prev.slice(0, 4)]);
+
+    // Disparar alerta sonora y notificación nativa del navegador si la pestaña está en 2do plano
+    sendNativePushNotification({
+      title: toast.titulo,
+      body: toast.mensaje,
+      ticketId: toast.ticketId,
+      tag: `woof-notif-${toast.ticketId || toast.id}`,
+    });
+  }, []);
+
+  const removerToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  // ⌨️ Atajos de teclado globales (N / Alt+N / Ctrl+N para Nuevo Ticket, 'Esc' para cerrar modales/drawers)
   useEffect(() => {
     if (!session || !userProfile) return;
 
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      const isTyping =
+      const isTyping = Boolean(
         target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.tagName === 'SELECT' ||
-          target.isContentEditable);
+          (target.tagName === 'INPUT' ||
+            target.tagName === 'TEXTAREA' ||
+            target.tagName === 'SELECT' ||
+            target.isContentEditable)
+      );
 
       // 1. Escape -> Cerrar el modal o drawer activo en orden de prioridad
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' || e.code === 'Escape') {
         if (isColorPickerOpen) {
           e.preventDefault();
           setIsColorPickerOpen(false);
@@ -358,39 +375,37 @@ export default function App() {
         return;
       }
 
-      // 2. Nuevo Ticket -> Ctrl/Cmd + N, Alt + N, o tecla 'N' (cuando no se está escribiendo en un input)
-      const isNewTicketShortcut =
-        ((e.metaKey || e.ctrlKey || e.altKey) && e.key.toLowerCase() === 'n') ||
-        (!isTyping && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'n');
+      // 2. Nuevo Ticket -> Tecla 'N' (cuando no estás escribiendo en un input) o Alt/Option + N o Ctrl + N
+      // Usamos e.code === 'KeyN' porque en Mac Option+N genera el acento '~' (Dead key) en e.key
+      const isKeyN = e.code === 'KeyN' || e.key.toLowerCase() === 'n';
+      const isModifiedN = (e.altKey || e.ctrlKey || e.metaKey) && isKeyN;
+      const isPlainN = !isTyping && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && isKeyN;
+      const isShiftN = !isTyping && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && isKeyN;
 
-      if (isNewTicketShortcut) {
+      if (isModifiedN || isPlainN || isShiftN) {
+        if (isNewModalOpen || isTeamModalOpen || isColorPickerOpen) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
         const canCreateTicket = uiRole === 'CONTENIDOS' || uiRole === 'SUPER_ADMIN';
-        if (canCreateTicket && !isNewModalOpen && !isTeamModalOpen && !isColorPickerOpen) {
-          e.preventDefault();
+        if (canCreateTicket) {
           setIsNewModalOpen(true);
+        } else {
+          agregarToast({
+            id: `shortcut-role-${Date.now()}`,
+            tipo: 'ticket',
+            titulo: '🔒 Acción exclusiva de Contenidos',
+            mensaje: 'Estás logueado en el equipo de Gráfica. Solo Contenidos o Super Admin pueden crear nuevos tickets.',
+            creadoEn: Date.now(),
+          });
         }
       }
     };
 
-    window.addEventListener('keydown', handleGlobalKeyDown);
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [session, userProfile, uiRole, isColorPickerOpen, isTeamModalOpen, isNewModalOpen, selectedTicket]);
-
-  const agregarToast = useCallback((toast: ToastNotification) => {
-    setToasts((prev) => [toast, ...prev.slice(0, 4)]);
-
-    // Disparar alerta sonora y notificación nativa del navegador si la pestaña está en 2do plano
-    sendNativePushNotification({
-      title: toast.titulo,
-      body: toast.mensaje,
-      ticketId: toast.ticketId,
-      tag: `woof-notif-${toast.ticketId || toast.id}`,
-    });
-  }, []);
-
-  const removerToast = useCallback((id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
+    window.addEventListener('keydown', handleGlobalKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown, { capture: true });
+  }, [session, userProfile, uiRole, isColorPickerOpen, isTeamModalOpen, isNewModalOpen, selectedTicket, agregarToast]);
 
   // Carga de tickets desde Supabase sincronizando la bandeja de lectura del EQUIPO activo
   const cargarTickets = useCallback(async () => {

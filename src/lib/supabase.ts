@@ -483,6 +483,22 @@ export const ticketsService = {
     const rawTickets = res.data || [];
     const total = rawTickets.length;
 
+    // Si la base de datos se vació a cero, limpiar automáticamente cualquier caché local de tickets viejos
+    // para que el nuevo #001 (id=1) arranque 100% limpio sin heredar estados ni lecturas anteriores
+    if (total === 0) {
+      try {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith("ticketing_")) {
+            keysToRemove.push(k);
+          }
+        }
+        keysToRemove.forEach((k) => localStorage.removeItem(k));
+      } catch {}
+      return [];
+    }
+
     // Asignar número ordenado para que los más antiguos comiencen en #001 y los más nuevos continúen la serie
     return rawTickets.map((ticket, index) => {
       const fallbackSeq = total - index;

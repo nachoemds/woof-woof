@@ -85,20 +85,27 @@ export const NotionTable: React.FC<NotionTableProps> = ({
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      const isTyping =
+      const isTyping = Boolean(
         target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.tagName === "SELECT" ||
-          target.isContentEditable);
+          (target.tagName === "INPUT" ||
+            target.tagName === "TEXTAREA" ||
+            target.tagName === "SELECT" ||
+            target.isContentEditable)
+      );
 
       // 1. Atajo Ctrl/Cmd + F o Ctrl/Cmd + K (o '/' cuando no se está escribiendo) -> Enfocar buscador
-      if (
-        ((e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === "f" || e.key.toLowerCase() === "k")) ||
-        (!isTyping && !e.metaKey && !e.ctrlKey && !e.altKey && e.key === "/")
-      ) {
+      const isSearchCombo =
+        (e.metaKey || e.ctrlKey) &&
+        (e.code === "KeyF" ||
+          e.code === "KeyK" ||
+          e.key.toLowerCase() === "f" ||
+          e.key.toLowerCase() === "k");
+      const isSlashShortcut = !isTyping && !e.metaKey && !e.ctrlKey && !e.altKey && e.key === "/";
+
+      if (isSearchCombo || isSlashShortcut) {
         if (searchInputRef.current) {
           e.preventDefault();
+          e.stopPropagation();
           searchInputRef.current.focus();
           searchInputRef.current.select();
         }
@@ -106,7 +113,7 @@ export const NotionTable: React.FC<NotionTableProps> = ({
       }
 
       // 2. Atajo Escape -> Cerrar modales locales de confirmación o limpiar/salir del buscador
-      if (e.key === "Escape") {
+      if (e.key === "Escape" || e.code === "Escape") {
         if (ticketAEliminar) {
           setTicketAEliminar(null);
           return;
@@ -129,8 +136,8 @@ export const NotionTable: React.FC<NotionTableProps> = ({
       }
     };
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
   }, [ticketAEliminar, ticketAPurgar, mostrarModalVaciarPapelera, searchTerm]);
 
   // Separación limpia entre tickets activos y registro de eliminados
