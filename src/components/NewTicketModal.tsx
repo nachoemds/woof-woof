@@ -3,10 +3,10 @@ import React, { useState, useMemo } from 'react';
 import { Ticket, UserRole, Profile } from '../types';
 import { ticketsService } from '../lib/supabase';
 import { RichTextEditor } from './RichTextEditor';
+import { htmlHasImages } from '../lib/imageStorage';
 import { 
   X, 
   Send, 
-  Save, 
   Building2, 
   Sparkles, 
   Clock, 
@@ -32,6 +32,13 @@ const DEFAULT_AREAS = [
   'Diseño UI/UX',
   'Eventos y Producción'
 ];
+
+function normalizeUrlInput(raw: string): string {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
 
 export const NewTicketModal: React.FC<NewTicketModalProps> = ({
   isOpen,
@@ -89,7 +96,7 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
     } catch {}
   };
 
-  const handleSubmit = async (esBorrador: boolean) => {
+  const handleSubmit = async () => {
     if (!titulo.trim()) {
       setError('Por favor indica un título para el pedido.');
       return;
@@ -102,14 +109,17 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
     }
 
     const briefPlano = brief.replace(/<[^>]*>/g, '').trim();
-    if (!briefPlano && !esBorrador) {
-      setError('Por favor agrega el brief o las especificaciones del pedido.');
+    const tieneImagenes = htmlHasImages(brief);
+    if (!briefPlano && !tieneImagenes) {
+      setError('Por favor agrega el brief, especificaciones o adjunta al menos una imagen de referencia.');
       return;
     }
 
     const nombreCreador = userProfile?.nombre?.trim() || userProfile?.email?.split('@')[0] || (
       currentRole === 'SUPER_ADMIN' ? 'Super Administrador' : 'Equipo de Contenidos'
     );
+
+    const linkNormalizado = normalizeUrlInput(linkReferencia);
 
     try {
       setLoading(true);
@@ -121,7 +131,7 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
         titulo: titulo.trim(),
         area_solicitante: areaLimpia,
         brief: brief.trim(),
-        links_referencia: linkReferencia.trim() || undefined,
+        links_referencia: linkNormalizado || undefined,
         estado: 'pendiente',
         creado_por: nombreCreador,
         user_id: userProfile?.id,
@@ -213,6 +223,7 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
             <input
               type="text"
               required
+              autoFocus
               placeholder="Ej. Banners promocionales para Instagram y Web - Campaña Invierno"
               value={titulo}
               onChange={(e) => setTitulo(e.target.value)}
@@ -283,8 +294,10 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
             <RichTextEditor
               value={brief}
               onChange={setBrief}
-              placeholder="Detalla dimensiones, formatos (PNG, Reels, Stories, PDF), copies y cualquier instrucción importante para el diseñador..."
+              placeholder="Detalla dimensiones, formatos (PNG, Reels, Stories, PDF), copies y cualquier instrucción importante para el diseñador, o pega capturas con Ctrl+V..."
               minHeight="140px"
+              storageFolder="briefs"
+              onSubmitShortcut={handleSubmit}
             />
           </div>
 
@@ -296,7 +309,7 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
             </label>
             <div className="relative">
               <input
-                type="url"
+                type="text"
                 placeholder="https://drive.google.com/drive/folders/..."
                 value={linkReferencia}
                 onChange={(e) => setLinkReferencia(e.target.value)}
@@ -318,32 +331,21 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
           <button
             type="button"
             disabled={loading}
-            onClick={() => handleSubmit(true)}
-            className="inline-flex items-center space-x-1.5 px-3 py-2 text-xs font-medium text-neutral-700 dark:text-neutral-300 bg-white dark:bg-[#191919] border border-neutral-300 dark:border-neutral-700 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 transition disabled:opacity-50 cursor-pointer"
+            onClick={onClose}
+            className="px-3.5 py-2 text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-200/60 dark:hover:bg-neutral-800 rounded-lg transition cursor-pointer"
           >
-            <Save className="w-3.5 h-3.5 text-neutral-500 dark:text-neutral-400" />
-            <span>Guardar como Borrador</span>
+            Cancelar
           </button>
 
-          <div className="flex items-center space-x-2">
-            <button
-              type="button"
-              disabled={loading}
-              onClick={onClose}
-              className="px-3.5 py-2 text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white transition cursor-pointer"
-            >
-              Cancelar
-            </button>
-            <button
-              type="button"
-              disabled={loading}
-              onClick={() => handleSubmit(false)}
-              className="inline-flex items-center space-x-1.5 px-4 py-2 text-xs font-medium text-white dark:text-neutral-950 bg-neutral-900 dark:bg-white hover:bg-neutral-800 dark:hover:bg-neutral-100 rounded-lg shadow-sm transition disabled:opacity-50 cursor-pointer"
-            >
-              <Send className="w-3.5 h-3.5" />
-              <span>{loading ? 'Enviando...' : 'Enviar Ticket a Gráfica'}</span>
-            </button>
-          </div>
+          <button
+            type="button"
+            disabled={loading}
+            onClick={handleSubmit}
+            className="inline-flex items-center space-x-1.5 px-4 py-2 text-xs font-semibold text-white dark:text-neutral-950 bg-neutral-900 dark:bg-white hover:bg-neutral-800 dark:hover:bg-neutral-100 rounded-lg shadow-sm transition disabled:opacity-50 cursor-pointer"
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>{loading ? 'Enviando...' : 'Enviar Ticket a Gráfica'}</span>
+          </button>
         </div>
 
       </div>
@@ -351,3 +353,4 @@ export const NewTicketModal: React.FC<NewTicketModalProps> = ({
     </div>
   );
 };
+
